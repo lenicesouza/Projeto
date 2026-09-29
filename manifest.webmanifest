@@ -1,0 +1,14 @@
+{
+  "name": "Meu Dia — Assistente Pessoal",
+  "short_name": "Meu Dia",
+  "description": "Tarefas, rotina e finanças pessoais em um só lugar.",
+  "lang": "pt-BR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#4f46e5",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

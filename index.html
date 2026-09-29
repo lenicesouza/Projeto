@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#4f46e5">
-  <meta name="description" content="Tarefas, rotina e finanças pessoais em um só lugar.">
+  <meta name="description" content="Casa, cuidados, inglês, pendências e finanças em cards.">
   <title>Meu Dia</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -13,19 +13,15 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 id="view-title">Hoje</h1>
-    <span id="today-label" class="muted"></span>
+    <a id="back" class="icon-link" href="#" aria-label="Voltar ao início" hidden>‹</a>
+    <div class="titles">
+      <h1 id="view-title">Meu Dia</h1>
+      <span id="today-label" class="muted"></span>
+    </div>
+    <a id="settings" class="icon-link" href="#mais" aria-label="Configurações">⚙️</a>
   </header>
 
   <main id="view" tabindex="-1"></main>
-
-  <nav class="tabbar" aria-label="Seções">
-    <button type="button" data-view="today"><span aria-hidden="true">☀️</span>Hoje</button>
-    <button type="button" data-view="tasks"><span aria-hidden="true">✅</span>Tarefas</button>
-    <button type="button" data-view="routine"><span aria-hidden="true">🔁</span>Rotina</button>
-    <button type="button" data-view="finance"><span aria-hidden="true">💰</span>Finanças</button>
-    <button type="button" data-view="more"><span aria-hidden="true">⚙️</span>Mais</button>
-  </nav>
 
   <div id="toast" role="status" aria-live="polite"></div>
 

@@ -1,19 +1,37 @@
 'use strict';
 
 /* ==========================================================================
-   Meu Dia — tarefas, rotina e finanças em um só lugar.
-   Sem servidor: os dados ficam no localStorage deste navegador.
+   Meu Dia — painel pessoal em cards: casa, cuidados, inglês, pendências
+   adiadas e finanças. Sem servidor: os dados ficam no localStorage.
    ========================================================================== */
 
+// Chave mantida desde a v1 para não perder dados; o formato é migrado em normalize().
 const STORAGE_KEY = 'meu-dia:v1';
 const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const CATEGORIES = {
-  out: ['Moradia', 'Alimentação', 'Transporte', 'Saúde', 'Lazer', 'Educação', 'Contas', 'Compras', 'Outros'],
+  out: ['Moradia', 'Alimentação', 'Transporte', 'Saúde', 'Beleza', 'Lazer', 'Educação', 'Contas', 'Compras', 'Outros'],
   in: ['Salário', 'Renda extra', 'Investimentos', 'Reembolso', 'Outros'],
 };
-const PRIORITY_LABEL = { high: 'Alta', normal: 'Normal', low: 'Baixa' };
 const PRIORITY_ORDER = { high: 0, normal: 1, low: 2 };
-const VIEW_TITLES = { today: 'Hoje', tasks: 'Tarefas', routine: 'Rotina', finance: 'Finanças', more: 'Mais' };
+const FOCUS_LIMIT = 3;
+const FREQ_TYPES = {
+  daily: 'Todo dia',
+  weekdays: 'Dias da semana',
+  weekly: '1x por semana',
+  monthly: '1x por mês',
+  interval: 'A cada N dias',
+};
+const DEFAULT_AREAS = [
+  { id: 'casa', name: 'Casa', emoji: '🏠' },
+  { id: 'cuidados', name: 'Cuidados', emoji: '💆' },
+  { id: 'ingles', name: 'Inglês', emoji: '🇬🇧' },
+];
+const AREA_HINTS = {
+  casa: { placeholder: 'Ex.: Trocar roupa de cama', freq: 'weekly' },
+  cuidados: { placeholder: 'Ex.: Hidratar o cabelo', freq: 'weekly' },
+  ingles: { placeholder: 'Ex.: Aula de inglês', freq: 'weekdays', notes: 'O que viu na aula, palavras novas, dúvidas…' },
+};
+const FINANCE_TABS = { lancamentos: 'Lançamentos', compromissos: 'Compromissos', orcamento: 'Orçamento', metas: 'Metas' };
 
 /* ---------- utilidades ---------- */
 
@@ -30,12 +48,20 @@ const addDays = (iso, n) => {
   d.setDate(d.getDate() + n);
   return toISODate(d);
 };
+const daysBetween = (a, b) => Math.round((parseISODate(b) - parseISODate(a)) / 86400000);
 const monthKey = iso => iso.slice(0, 7);
 const shiftMonth = (key, n) => {
   const [y, m] = key.split('-').map(Number);
   const d = new Date(y, m - 1 + n, 1);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
 };
+const monthEnd = key => {
+  const [y, m] = key.split('-').map(Number);
+  return toISODate(new Date(y, m, 0));
+};
+// Semana de segunda a domingo.
+const weekStart = iso => addDays(iso, -((parseISODate(iso).getDay() + 6) % 7));
+const localDate = isoDateTime => toISODate(new Date(isoDateTime));
 
 const uid = () =>
   globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -43,8 +69,11 @@ const uid = () =>
 const esc = s =>
   String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 const money = cents => brl.format(cents / 100);
+const moneyInput = cents => (cents / 100).toFixed(2).replace('.', ',');
 
 const fmtShortDate = iso => parseISODate(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
 const fmtMonth = key => {
@@ -63,18 +92,47 @@ function parseMoney(input) {
 
 /* ---------- estado e persistência ---------- */
 
-// budgets: { categoria: limite mensal em centavos } — vale para todos os meses.
-// goals: metas de economia; o valor guardado vem dos lançamentos com goalId.
-const defaultState = () => ({ version: 1, tasks: [], habits: [], transactions: [], budgets: {}, goals: [] });
-const DATA_KEYS = ['tasks', 'habits', 'transactions', 'goals'];
+const newItem = (areaId, name, freq, log = {}) => ({
+  id: uid(), areaId, name, freq, log, createdAt: new Date().toISOString(),
+});
+
+const defaultState = () => ({
+  version: 2,
+  areas: DEFAULT_AREAS.map(a => ({ ...a })),
+  // items: rotinas recorrentes de qualquer card (casa, cuidados, inglês…).
+  items: [
+    newItem('cuidados', 'Hidratar o cabelo', { type: 'weekly' }),
+    newItem('cuidados', 'Limpar a sobrancelha', { type: 'interval', every: 15 }),
+  ],
+  notes: [],
+  tasks: [], // card "Adiados"
+  transactions: [],
+  bills: [], // compromissos mensais; o pagamento é um lançamento com billId
+  budgets: {}, // { categoria: limite mensal em centavos }
+  goals: [], // metas; o valor guardado vem dos lançamentos com goalId
+});
+
+const DATA_KEYS = ['areas', 'items', 'notes', 'tasks', 'transactions', 'bills', 'goals', 'habits'];
+const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 
 function normalize(data) {
   const s = defaultState();
-  if (data && typeof data === 'object') {
-    for (const k of DATA_KEYS) {
-      if (Array.isArray(data[k])) s[k] = data[k];
+  if (!isPlainObject(data)) return s;
+  for (const k of ['tasks', 'transactions', 'bills', 'goals', 'notes']) {
+    if (Array.isArray(data[k])) s[k] = data[k];
+  }
+  if (isPlainObject(data.budgets)) s.budgets = data.budgets;
+
+  if ((data.version || 1) >= 2) {
+    if (Array.isArray(data.areas)) s.areas = data.areas;
+    if (Array.isArray(data.items)) s.items = data.items;
+  } else if (Array.isArray(data.habits) && data.habits.length) {
+    // v1: os hábitos viram itens de um card "Hábitos", com o histórico preservado.
+    s.areas.push({ id: 'habitos', name: 'Hábitos', emoji: '🔁' });
+    for (const h of data.habits) {
+      const freq = h.days.length === 7 ? { type: 'daily' } : { type: 'weekdays', days: h.days };
+      s.items.push({ id: h.id, areaId: 'habitos', name: h.name, freq, log: h.log || {}, createdAt: h.createdAt });
     }
-    if (data.budgets && typeof data.budgets === 'object' && !Array.isArray(data.budgets)) s.budgets = data.budgets;
   }
   return s;
 }
@@ -99,42 +157,88 @@ function save() {
 }
 
 const ui = {
-  view: 'today',
-  taskFilter: 'pending',
   financeMonth: monthKey(todayISO()),
   txType: 'out',
-  financeTab: 'entries',
 };
 
-/* ---------- regras de negócio ---------- */
+/* ---------- rotinas recorrentes ---------- */
 
-function taskBucket(task, today) {
-  if (!task.due) return 'nodate';
-  if (task.due < today) return 'late';
-  if (task.due === today) return 'today';
-  return 'upcoming';
+function freqLabel(f) {
+  if (f.type === 'weekdays') return f.days.length === 7 ? 'Todo dia' : f.days.map(d => WEEKDAYS[d]).join(', ');
+  if (f.type === 'interval') return `A cada ${f.every} dias`;
+  return FREQ_TYPES[f.type];
 }
 
-function sortTasks(a, b) {
-  const da = a.due || '9999-99-99';
-  const db = b.due || '9999-99-99';
-  if (da !== db) return da < db ? -1 : 1;
-  return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+function lastDone(item, upTo) {
+  let last = null;
+  for (const d in item.log) if (item.log[d] && d <= upTo && (!last || d > last)) last = d;
+  return last;
 }
 
-const isScheduled = (habit, iso) => habit.days.includes(parseISODate(iso).getDay());
-
-// Sequência de dias programados cumpridos. Se hoje ainda não foi feito, conta a partir de ontem.
-function streak(habit, today) {
-  let day = habit.log[today] ? today : addDays(today, -1);
-  let count = 0;
-  for (let i = 0; i < 400; i++, day = addDays(day, -1)) {
-    if (!isScheduled(habit, day)) continue;
-    if (!habit.log[day]) break;
-    count++;
+function nextWeekday(days, today) {
+  for (let i = 1; i <= 7; i++) {
+    const d = addDays(today, i);
+    if (days.includes(parseISODate(d).getDay())) return i === 1 ? 'amanhã' : WEEKDAYS[parseISODate(d).getDay()];
   }
-  return count;
+  return '—';
 }
+
+/*
+  Situação de um item hoje.
+  - done: já cumprido no período atual (dia, semana ou mês; para "a cada N dias", feito hoje).
+  - show: aparece em "Para hoje". Semanais/mensais só entram nos 2 últimos dias do período,
+    para a tela inicial não virar uma lista permanente de pendências.
+  - late: atrasado (só para "a cada N dias").
+*/
+function itemStatus(item, today) {
+  const f = item.freq;
+  const last = lastDone(item, today);
+  const doneToday = last === today;
+
+  if (f.type === 'interval') {
+    if (doneToday) return { done: true, doneToday, show: false, label: `Feito hoje · próxima em ${f.every} dias` };
+    if (!last) return { done: false, show: false, label: 'Sem registro · marque quando fizer' };
+    const overdue = daysBetween(addDays(last, f.every), today);
+    if (overdue < 0) return { done: false, show: false, resting: true, label: `Próxima em ${plural(-overdue, 'dia', 'dias')}` };
+    return {
+      done: false,
+      show: true,
+      late: overdue > 0,
+      label: overdue === 0 ? 'Hoje' : `Atrasado ${plural(overdue, 'dia', 'dias')}`,
+    };
+  }
+
+  if (f.type === 'weekdays' && !f.days.includes(parseISODate(today).getDay())) {
+    return { done: false, show: false, resting: true, label: `Próxima: ${nextWeekday(f.days, today)}` };
+  }
+
+  if (f.type === 'weekly' || f.type === 'monthly') {
+    const start = f.type === 'weekly' ? weekStart(today) : `${monthKey(today)}-01`;
+    const end = f.type === 'weekly' ? addDays(start, 6) : monthEnd(monthKey(today));
+    const done = !!last && last >= start;
+    const left = daysBetween(today, end);
+    let label;
+    if (done) label = `Feito ${doneToday ? 'hoje' : fmtShortDate(last)}`;
+    else if (left === 0) label = 'Último dia';
+    else label = `Até ${f.type === 'weekly' ? 'domingo' : fmtShortDate(end)} · ${plural(left, 'dia', 'dias')}`;
+    return { done, doneToday, show: !done && left <= 1, label };
+  }
+
+  // Diário ou dia da semana programado para hoje.
+  return { done: doneToday, doneToday, show: !doneToday, label: doneToday ? 'Feito hoje' : 'Hoje' };
+}
+
+const doneInMonth = (item, key) => Object.keys(item.log).filter(d => item.log[d] && monthKey(d) === key).length;
+
+function statusRank(st) {
+  if (st.late) return 0;
+  if (st.show) return 1;
+  if (!st.done && !st.resting) return 2;
+  if (st.resting) return 3;
+  return 4;
+}
+
+/* ---------- finanças ---------- */
 
 function monthSummary(key) {
   const txs = state.transactions.filter(t => monthKey(t.date) === key);
@@ -165,6 +269,14 @@ function budgetLines(key) {
     .sort((a, b) => b.pct - a.pct);
 }
 
+function budgetAlert(category, key) {
+  const line = budgetLines(key).find(l => l.category === category);
+  if (!line || line.level === 'ok') return null;
+  return line.level === 'over'
+    ? `⚠️ Orçamento de ${category} estourado: ${money(line.spent)} de ${money(line.limit)}.`
+    : `Atenção: ${line.pct}% do orçamento de ${category} já foi usado.`;
+}
+
 const goalSaved = id =>
   state.transactions.reduce((sum, t) => (t.goalId === id ? sum + (t.type === 'out' ? t.amount : -t.amount) : sum), 0);
 
@@ -175,191 +287,325 @@ function monthsLeft(deadline, today) {
   return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
 }
 
-function budgetAlert(category, key) {
-  const line = budgetLines(key).find(l => l.category === category);
-  if (!line || line.level === 'ok') return null;
-  return line.level === 'over'
-    ? `⚠️ Orçamento de ${category} estourado: ${money(line.spent)} de ${money(line.limit)}.`
-    : `Atenção: ${line.pct}% do orçamento de ${category} já foi usado.`;
+// Vencimento no mês; dia 31 em mês de 30 dias vira o último dia.
+const billDue = (bill, key) => `${key}-${pad(Math.min(bill.day, Number(monthEnd(key).slice(8))))}`;
+
+function billsForMonth(key, today) {
+  return state.bills
+    .filter(b => (b.startMonth || monthKey(localDate(b.createdAt))) <= key)
+    .map(bill => {
+      const due = billDue(bill, key);
+      const payment = state.transactions.find(t => t.billId === bill.id && t.billMonth === key);
+      return { bill, due, payment, daysLeft: daysBetween(today, due) };
+    })
+    .sort((a, b) => a.due.localeCompare(b.due));
+}
+
+function billLabel(row) {
+  if (row.payment) return `Pago ${money(row.payment.amount)} em ${fmtShortDate(row.payment.date)}`;
+  if (row.daysLeft < 0) return `<span class="neg">Venceu ${fmtShortDate(row.due)}</span>`;
+  if (row.daysLeft === 0) return '<span class="warn-text">Vence hoje</span>';
+  return `Vence ${fmtShortDate(row.due)} · em ${plural(row.daysLeft, 'dia', 'dias')}`;
 }
 
 /* ---------- componentes ---------- */
 
-function taskItem(task, today) {
+const list = (items, emptyText) =>
+  items.length ? `<ul class="list">${items.join('')}</ul>` : `<p class="empty">${emptyText}</p>`;
+
+const checkButton = (action, id, pressed, label) => `
+  <button class="check" data-action="${action}" data-id="${id}" aria-pressed="${pressed}"
+    aria-label="${pressed ? 'Desmarcar' : 'Marcar'}: ${esc(label)}">${pressed ? '✓' : ''}</button>`;
+
+const areaById = id => state.areas.find(a => a.id === id);
+
+function itemRow(item, st, { showArea = false } = {}) {
+  const area = showArea && areaById(item.areaId);
+  const tag = area
+    ? `<span class="badge">${esc(area.emoji)} ${esc(area.name)}</span>`
+    : `<span>${esc(freqLabel(item.freq))}</span>`;
+  return `
+    <li class="item ${st.done ? 'done' : ''}">
+      ${checkButton('toggle-item', item.id, st.done, item.name)}
+      <div class="body">
+        <div class="title">${esc(item.name)}</div>
+        <div class="meta">${tag}<span class="${st.late ? 'neg' : ''}">${st.label}</span></div>
+      </div>
+      ${showArea ? '' : `<button class="icon-btn" data-action="delete-item" data-id="${item.id}" aria-label="Excluir ${esc(item.name)}">✕</button>`}
+    </li>`;
+}
+
+function sortTasks(a, b) {
+  const da = a.due || '9999-99-99';
+  const db = b.due || '9999-99-99';
+  if (da !== db) return da < db ? -1 : 1;
+  return (PRIORITY_ORDER[a.priority] ?? 1) - (PRIORITY_ORDER[b.priority] ?? 1);
+}
+
+function taskRow(task, today, { compact = false } = {}) {
   const late = !task.done && task.due && task.due < today;
+  const age = daysBetween(localDate(task.createdAt), today);
   const meta = [];
-  if (task.due) meta.push(late ? `<span class="badge late">Atrasada · ${fmtShortDate(task.due)}</span>` : fmtShortDate(task.due));
-  if (task.priority !== 'normal') meta.push(`<span class="badge ${task.priority}">${PRIORITY_LABEL[task.priority]}</span>`);
+  if (compact) meta.push('<span class="badge">⏳ Adiados</span>');
+  if (task.due) meta.push(late ? `<span class="neg">Prazo: ${fmtShortDate(task.due)} (vencido)</span>` : `<span>Prazo: ${fmtShortDate(task.due)}</span>`);
+  if (!task.done && age >= 7) meta.push(`<span class="${age >= 30 ? 'warn-text' : ''}">adiando há ${age} dias</span>`);
+  if (task.priority === 'high') meta.push('<span class="badge high">Alta</span>');
   return `
     <li class="item ${task.done ? 'done' : ''}">
-      <button class="check" data-action="toggle-task" data-id="${task.id}" aria-pressed="${task.done}"
-        aria-label="${task.done ? 'Reabrir' : 'Concluir'}: ${esc(task.title)}">${task.done ? '✓' : ''}</button>
+      ${checkButton('toggle-task', task.id, task.done, task.title)}
       <div class="body">
         <div class="title">${esc(task.title)}</div>
+        ${task.step && !task.done ? `<div class="step">→ ${esc(task.step)}</div>` : ''}
         ${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}
       </div>
-      <button class="icon-btn" data-action="delete-task" data-id="${task.id}" aria-label="Excluir tarefa">✕</button>
+      ${compact || task.done ? '' : `<button class="icon-btn star" data-action="focus-task" data-id="${task.id}" aria-pressed="${!!task.focus}"
+        aria-label="${task.focus ? 'Tirar do foco' : 'Focar esta semana'}">${task.focus ? '★' : '☆'}</button>`}
+      ${compact ? '' : `<button class="icon-btn" data-action="delete-task" data-id="${task.id}" aria-label="Excluir">✕</button>`}
     </li>`;
 }
 
-function habitTodayItem(habit, today) {
-  const done = !!habit.log[today];
-  return `
-    <li class="item ${done ? 'done' : ''}">
-      <button class="check" data-action="toggle-habit" data-id="${habit.id}" data-date="${today}" aria-pressed="${done}"
-        aria-label="${done ? 'Desmarcar' : 'Marcar'}: ${esc(habit.name)}">${done ? '✓' : ''}</button>
-      <div class="body">
-        <div class="title">${esc(habit.name)}</div>
-        <div class="meta">🔥 ${streak(habit, today)} em sequência</div>
-      </div>
-    </li>`;
-}
+const bar = (pct, level = 'ok') =>
+  `<div class="bar"><span class="${level}" style="width:${Math.max(0, Math.min(pct, 100))}%"></span></div>`;
 
-function taskForm(compact) {
-  return `
-    <form class="inline card" data-form="task">
-      <input class="grow" type="text" name="title" placeholder="Nova tarefa…" required maxlength="200" aria-label="Título da tarefa">
-      ${compact ? `<input type="hidden" name="due" value="${todayISO()}">` : `
-      <input type="date" name="due" aria-label="Data">
-      <select name="priority" aria-label="Prioridade">
-        <option value="normal">Normal</option>
-        <option value="high">Alta</option>
-        <option value="low">Baixa</option>
-      </select>`}
-      <button class="btn" type="submit">Adicionar</button>
-    </form>`;
-}
+const monthNav = () => `
+  <div class="month-nav">
+    <button class="btn secondary" data-action="month" data-value="-1" aria-label="Mês anterior">‹</button>
+    <strong>${fmtMonth(ui.financeMonth)}</strong>
+    <button class="btn secondary" data-action="month" data-value="1" aria-label="Próximo mês">›</button>
+  </div>`;
 
-const list = (items, emptyText) => (items.length ? `<ul class="list">${items.join('')}</ul>` : `<p class="empty">${emptyText}</p>`);
+const weekdayPicker = (checked = []) => `
+  <div class="weekdays" role="group" aria-label="Dias da semana">
+    ${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="days" value="${i}" ${checked.includes(i) ? 'checked' : ''}><span>${d}</span></label>`).join('')}
+  </div>`;
 
 /* ---------- telas ---------- */
 
+const cardLink = (href, emoji, name, lines) => `
+  <a class="card area-card" href="${href}">
+    <span class="emoji" aria-hidden="true">${esc(emoji)}</span>
+    <span class="name">${esc(name)}</span>
+    <span class="summary">${lines.map(l => `<span>${l}</span>`).join('')}</span>
+  </a>`;
+
+function areaCard(area, today) {
+  const key = monthKey(today);
+  const items = state.items.filter(i => i.areaId === area.id);
+  const sts = items.map(i => itemStatus(i, today));
+  const late = sts.filter(s => s.late).length;
+  const forToday = sts.filter(s => s.show && !s.done && !s.late).length;
+  const period = items.filter((it, i) => ['weekly', 'monthly'].includes(it.freq.type) && !sts[i].done && !sts[i].show).length;
+  const doneMonth = items.reduce((n, it) => n + doneInMonth(it, key), 0);
+
+  const lines = [];
+  if (!items.length) lines.push('<span class="muted">Toque para adicionar itens</span>');
+  else {
+    if (late) lines.push(`<span class="neg">${plural(late, 'atrasado', 'atrasados')}</span>`);
+    if (forToday) lines.push(`${forToday} para hoje`);
+    if (period) lines.push(`${period} no prazo da semana/mês`);
+    if (!lines.length) lines.push('<span class="pos">✓ Em dia</span>');
+    lines.push(`<span class="muted">${plural(doneMonth, 'feito', 'feitos')} no mês</span>`);
+  }
+  return cardLink(`#area/${encodeURIComponent(area.id)}`, area.emoji, area.name, lines);
+}
+
 const views = {
-  today() {
+  home() {
     const today = todayISO();
-    const pending = state.tasks.filter(t => !t.done);
-    const focus = pending.filter(t => t.due && t.due <= today).sort(sortTasks);
-    const lateCount = focus.filter(t => t.due < today).length;
-    const habits = state.habits.filter(h => isScheduled(h, today));
-    const habitsDone = habits.filter(h => h.log[today]).length;
-    const { balance } = monthSummary(monthKey(today));
-    const budgetWarnings = budgetLines(monthKey(today)).filter(l => l.level !== 'ok');
+    const key = monthKey(today);
 
-    return `
-      <section class="stats">
-        <div class="card stat"><div class="label">Tarefas p/ hoje</div>
-          <div class="value">${focus.length}${lateCount ? ` <small class="neg">(${lateCount} atrasada${lateCount > 1 ? 's' : ''})</small>` : ''}</div></div>
-        <div class="card stat"><div class="label">Hábitos</div><div class="value">${habitsDone}/${habits.length}</div></div>
-        <div class="card stat"><div class="label">Saldo do mês</div>
-          <div class="value ${balance < 0 ? 'neg' : 'pos'}">${money(balance)}</div></div>
-      </section>
+    const recurring = state.items
+      .filter(it => areaById(it.areaId))
+      .map(it => ({ it, st: itemStatus(it, today) }))
+      .filter(x => x.st.show || x.st.doneToday)
+      .sort((a, b) => statusRank(a.st) - statusRank(b.st));
+    const tasks = state.tasks.filter(t => !t.done && (t.focus || (t.due && t.due <= today))).sort(sortTasks);
+    const bills = billsForMonth(key, today).filter(r => !r.payment && r.daysLeft <= 3);
+    const warnings = budgetLines(key).filter(l => l.level !== 'ok');
+    const pending = recurring.filter(x => !x.st.done).length + tasks.length + bills.length;
 
-      ${budgetWarnings.length ? `
-        <div class="card alert stack" style="margin-top:10px">
-          ${budgetWarnings.map(l => `<div>${l.level === 'over' ? '⚠️' : '🟡'} <b>${esc(l.category)}</b>: ${money(l.spent)} de ${money(l.limit)} (${l.pct}%)</div>`).join('')}
-        </div>` : ''}
-
-      <h2>Foco de hoje</h2>
-      <div class="stack">
-        ${taskForm(true)}
-        ${list(focus.map(t => taskItem(t, today)), 'Nada pendente para hoje. 🎉')}
-      </div>
-
-      <h2>Rotina de hoje</h2>
-      ${list(habits.map(h => habitTodayItem(h, today)), 'Nenhum hábito programado para hoje. Crie um na aba Rotina.')}
-    `;
-  },
-
-  tasks() {
-    const today = todayISO();
-    const filters = { pending: 'Pendentes', done: 'Concluídas', all: 'Todas' };
-    const visible = state.tasks.filter(t =>
-      ui.taskFilter === 'all' ? true : ui.taskFilter === 'done' ? t.done : !t.done
-    );
-
-    let content;
-    if (ui.taskFilter === 'done') {
-      const done = visible.sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
-      content = list(done.map(t => taskItem(t, today)), 'Nenhuma tarefa concluída ainda.');
-    } else {
-      const groups = { late: 'Atrasadas', today: 'Hoje', upcoming: 'Próximas', nodate: 'Sem data' };
-      const sections = Object.entries(groups)
-        .map(([key, label]) => {
-          const items = visible.filter(t => taskBucket(t, today) === key).sort(sortTasks);
-          return items.length ? `<h2>${label} <span class="muted">(${items.length})</span></h2>${list(items.map(t => taskItem(t, today)), '')}` : '';
-        })
-        .join('');
-      content = sections || '<p class="empty">Nenhuma tarefa por aqui.</p>';
-    }
-
-    return `
-      ${taskForm(false)}
-      <div class="chips" role="group" aria-label="Filtro">
-        ${Object.entries(filters).map(([k, label]) =>
-          `<button class="chip" data-action="task-filter" data-value="${k}" aria-pressed="${ui.taskFilter === k}">${label}</button>`).join('')}
-      </div>
-      ${content}
-    `;
-  },
-
-  routine() {
-    const today = todayISO();
-    const last7 = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6));
-
-    const items = state.habits.map(h => {
-      const dots = last7.map(day => {
-        const scheduled = isScheduled(h, day);
-        const on = !!h.log[day];
-        const label = `${WEEKDAYS[parseISODate(day).getDay()]} ${fmtShortDate(day)}`;
-        return scheduled
-          ? `<button class="dot ${on ? 'on' : ''}" data-action="toggle-habit" data-id="${h.id}" data-date="${day}"
-               aria-pressed="${on}" aria-label="${esc(h.name)} — ${label}" title="${label}">${WEEKDAYS[parseISODate(day).getDay()][0]}</button>`
-          : `<span class="dot off" title="${label} (não programado)">${WEEKDAYS[parseISODate(day).getDay()][0]}</span>`;
-      }).join('');
-      const days = h.days.length === 7 ? 'Todos os dias' : h.days.map(d => WEEKDAYS[d]).join(', ');
-      return `
+    const rows = [
+      ...bills.map(r => `
         <li class="item">
+          <span class="check static" aria-hidden="true">💳</span>
           <div class="body">
-            <div class="title">${esc(h.name)}</div>
-            <div class="meta"><span>${days}</span><span>🔥 ${streak(h, today)}</span></div>
-            <div class="dots">${dots}</div>
+            <div class="title">${esc(r.bill.name)} · ${money(r.bill.amount)}</div>
+            <div class="meta">${billLabel(r)}</div>
           </div>
-          <button class="icon-btn" data-action="delete-habit" data-id="${h.id}" aria-label="Excluir hábito">✕</button>
-        </li>`;
-    });
+          <a class="btn secondary small" href="#financas/compromissos">Pagar</a>
+        </li>`),
+      ...recurring.map(x => itemRow(x.it, x.st, { showArea: true })),
+      ...tasks.map(t => taskRow(t, today, { compact: true })),
+    ];
+
+    const open = state.tasks.filter(t => !t.done);
+    const oldest = open.reduce((max, t) => Math.max(max, daysBetween(localDate(t.createdAt), today)), 0);
+    const focus = open.filter(t => t.focus).length;
+    const adiadosLines = open.length
+      ? [plural(open.length, 'pendência', 'pendências'),
+        focus ? `⭐ ${focus} em foco` : '<span class="muted">Nenhuma em foco</span>',
+        oldest >= 7 ? `<span class="muted">mais antiga: ${oldest} dias</span>` : '']
+      : ['<span class="muted">Nada adiado 🎉</span>'];
+
+    const s = monthSummary(key);
+    const unpaid = billsForMonth(key, today).filter(r => !r.payment);
+    const financeLines = [
+      `Saldo livre <b class="${s.balance < 0 ? 'neg' : 'pos'}">${money(s.balance)}</b>`,
+      unpaid.length ? plural(unpaid.length, 'conta a pagar', 'contas a pagar') : '',
+      warnings.length ? `<span class="neg">${plural(warnings.length, 'alerta', 'alertas')} de orçamento</span>` : '',
+    ];
 
     return `
-      <form class="inline card" data-form="habit">
-        <input class="grow" type="text" name="name" placeholder="Novo hábito (ex.: beber 2L de água)" required maxlength="120" aria-label="Nome do hábito">
-        <button class="btn" type="submit">Adicionar</button>
-        <div class="weekdays" role="group" aria-label="Dias da semana">
-          ${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="days" value="${i}" checked><span>${d}</span></label>`).join('')}
+      <form class="inline card capture" data-form="task">
+        <input class="grow" type="text" name="title" placeholder="Anotar algo que precisa fazer…" required maxlength="200" aria-label="Nova pendência">
+        <button class="btn" type="submit" aria-label="Adicionar em Adiados">+</button>
+      </form>
+
+      <h2>Para hoje ${pending ? `<span class="muted">(${pending})</span>` : ''}</h2>
+      ${warnings.length ? `
+        <div class="card alert stack">
+          ${warnings.map(l => `<div>${l.level === 'over' ? '⚠️' : '🟡'} <b>${esc(l.category)}</b>: ${money(l.spent)} de ${money(l.limit)} (${l.pct}%)</div>`).join('')}
+        </div>` : ''}
+      ${list(rows, 'Nada para hoje. 🎉')}
+
+      <h2>Seus cards</h2>
+      <section class="cards">
+        ${state.areas.map(a => areaCard(a, today)).join('')}
+        ${cardLink('#adiados', '⏳', 'Adiados', adiadosLines.filter(Boolean))}
+        ${cardLink('#financas', '💰', 'Finanças', financeLines.filter(Boolean))}
+      </section>
+    `;
+  },
+
+  area(id) {
+    const area = areaById(id);
+    if (!area) return '<p class="empty">Card não encontrado. <a href="#">Voltar ao início</a></p>';
+    const today = todayISO();
+    const hint = AREA_HINTS[id] || {};
+    const defFreq = hint.freq || 'weekly';
+
+    const items = state.items
+      .filter(i => i.areaId === id)
+      .map(it => ({ it, st: itemStatus(it, today) }))
+      .sort((a, b) => statusRank(a.st) - statusRank(b.st));
+    const notes = state.notes
+      .filter(n => n.areaId === id)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+
+    return `
+      ${list(items.map(x => itemRow(x.it, x.st)), 'Nenhum item ainda. Adicione abaixo.')}
+
+      <details class="card add" ${items.length ? '' : 'open'}>
+        <summary>+ Novo item</summary>
+        <form class="stack" data-form="item" data-freq="${defFreq}">
+          <input type="hidden" name="areaId" value="${esc(id)}">
+          <input type="text" name="name" placeholder="${esc(hint.placeholder || 'Nome do item')}" required maxlength="120" aria-label="Nome do item">
+          <div class="inline">
+            <select name="freq" aria-label="Frequência" style="flex:1 1 160px">
+              ${Object.entries(FREQ_TYPES).map(([k, l]) => `<option value="${k}" ${k === defFreq ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+            <label class="only-interval muted">a cada <input type="number" name="every" min="1" max="365" value="15" aria-label="Número de dias"> dias</label>
+          </div>
+          <div class="only-weekdays">${weekdayPicker()}</div>
+          <label class="only-interval muted">Última vez que fez (opcional) <input type="date" name="last" max="${today}"></label>
+          <button class="btn" type="submit">Adicionar</button>
+        </form>
+      </details>
+
+      <details class="notes" ${notes.length || hint.notes ? 'open' : ''}>
+        <summary><h2>Anotações <span class="muted">(${notes.length})</span></h2></summary>
+        <form class="card stack" data-form="note">
+          <input type="hidden" name="areaId" value="${esc(id)}">
+          <textarea name="text" rows="3" required maxlength="4000" placeholder="${esc(hint.notes || 'Escreva uma anotação…')}" aria-label="Anotação"></textarea>
+          <div class="inline">
+            <input type="date" name="date" value="${today}" required aria-label="Data">
+            <button class="btn" type="submit">Salvar</button>
+          </div>
+        </form>
+        ${notes.length ? `<ul class="list" style="margin-top:8px">${notes.map(n => `
+          <li class="item">
+            <div class="body">
+              <div class="meta">${fmtShortDate(n.date)}</div>
+              <div class="note-text">${esc(n.text)}</div>
+            </div>
+            <button class="icon-btn" data-action="delete-note" data-id="${n.id}" aria-label="Excluir anotação">✕</button>
+          </li>`).join('')}</ul>` : ''}
+      </details>
+    `;
+  },
+
+  adiados() {
+    const today = todayISO();
+    const open = state.tasks.filter(t => !t.done);
+    const focus = open.filter(t => t.focus).sort(sortTasks);
+    const dated = open.filter(t => !t.focus && t.due).sort(sortTasks);
+    const undated = open.filter(t => !t.focus && !t.due).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const done = state.tasks.filter(t => t.done).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || '')).slice(0, 30);
+    const section = (title, items) => items.length
+      ? `<h2>${title} <span class="muted">(${items.length})</span></h2>${list(items.map(t => taskRow(t, today)), '')}` : '';
+
+    return `
+      <form class="card stack" data-form="task">
+        <input type="text" name="title" placeholder="O que você vive adiando?" required maxlength="200" aria-label="Pendência">
+        <input type="text" name="step" placeholder="Menor próximo passo (ex.: pesquisar 3 orçamentos)" maxlength="160" aria-label="Próximo passo">
+        <div class="inline">
+          <label class="muted" style="display:flex;align-items:center;gap:6px;flex:1">Prazo <input type="date" name="due" aria-label="Prazo (opcional)"></label>
+          <button class="btn" type="submit">Adicionar</button>
         </div>
       </form>
-      <h2>Seus hábitos <span class="muted">· últimos 7 dias</span></h2>
-      ${list(items, 'Nenhum hábito ainda. Comece com algo pequeno.')}
+      <p class="muted">Marque até ${FOCUS_LIMIT} com ☆ para focar nesta semana — elas aparecem em "Para hoje".</p>
+
+      ${section('⭐ Foco da semana', focus)}
+      ${section('Com prazo', dated)}
+      ${section('Sem prazo · mais antigas primeiro', undated)}
+      ${open.length ? '' : '<p class="empty">Nada adiado. 🎉</p>'}
+
+      ${done.length ? `
+        <details class="notes">
+          <summary><h2>Concluídas <span class="muted">(${done.length})</span></h2></summary>
+          ${list(done.map(t => taskRow(t, today)), '')}
+        </details>` : ''}
     `;
   },
 
-  finance() {
-    const tabs = { entries: 'Lançamentos', budget: 'Orçamento', goals: 'Metas' };
-    const header = `
-      <div class="chips segmented" role="group" aria-label="Seção de finanças">
-        ${Object.entries(tabs).map(([k, label]) =>
-          `<button class="chip" data-action="finance-tab" data-value="${k}" aria-pressed="${ui.financeTab === k}">${label}</button>`).join('')}
-      </div>`;
-    return header + financeViews[ui.financeTab]();
+  financas(tab) {
+    const current = FINANCE_TABS[tab] ? tab : 'lancamentos';
+    return `
+      <nav class="chips" aria-label="Seção de finanças">
+        ${Object.entries(FINANCE_TABS).map(([k, label]) =>
+          `<a class="chip" href="#financas/${k}" ${k === current ? 'aria-current="page"' : ''}>${label}</a>`).join('')}
+      </nav>
+      ${financeViews[current]()}`;
   },
 
-  more() {
-    const counts = `${state.tasks.length} tarefas · ${state.habits.length} hábitos · ${state.transactions.length} lançamentos · ${state.goals.length} metas`;
+  mais() {
+    const counts = [
+      plural(state.items.length, 'rotina', 'rotinas'),
+      plural(state.tasks.length, 'pendência', 'pendências'),
+      plural(state.notes.length, 'anotação', 'anotações'),
+      plural(state.transactions.length, 'lançamento', 'lançamentos'),
+    ].join(' · ');
     return `
+      <h2>Cards de rotina</h2>
+      ${list(state.areas.map(a => `
+        <li class="item">
+          <span class="emoji-sm" aria-hidden="true">${esc(a.emoji)}</span>
+          <div class="body"><div class="title">${esc(a.name)}</div>
+            <div class="meta">${plural(state.items.filter(i => i.areaId === a.id).length, 'item', 'itens')}</div></div>
+          <button class="icon-btn" data-action="delete-area" data-id="${esc(a.id)}" aria-label="Excluir card ${esc(a.name)}">✕</button>
+        </li>`), 'Nenhum card de rotina.')}
+      <form class="inline card" data-form="area" style="margin-top:8px">
+        <input type="text" name="emoji" value="📌" maxlength="8" aria-label="Emoji" style="width:64px;text-align:center">
+        <input class="grow" type="text" name="name" placeholder="Novo card (ex.: Academia, Plantas)" required maxlength="40" aria-label="Nome do card">
+        <button class="btn" type="submit">Criar</button>
+      </form>
+
+      <h2>Seus dados</h2>
       <div class="card stack">
-        <strong>Seus dados</strong>
-        <p class="muted" style="margin:0">Tudo fica salvo <b>apenas neste navegador</b>. Se você limpar os dados do navegador
-          ou trocar de aparelho, perde o histórico — faça backup regularmente.</p>
+        <p class="muted" style="margin:0">Tudo fica salvo <b>apenas neste aparelho</b>. Se limpar os dados do navegador
+          ou trocar de celular, perde o histórico — faça backup regularmente.</p>
         <p class="muted" style="margin:0">${counts}</p>
-        <div class="inline" style="display:flex;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn" data-action="export">Exportar backup</button>
           <label class="btn secondary" style="display:inline-flex;align-items:center">
             Importar backup<input type="file" accept="application/json,.json" data-action="import" hidden>
@@ -374,19 +620,10 @@ const views = {
 
 /* ---------- finanças: subabas ---------- */
 
-const monthNav = () => `
-  <div class="month-nav">
-    <button class="btn secondary" data-action="month" data-value="-1" aria-label="Mês anterior">‹</button>
-    <strong>${fmtMonth(ui.financeMonth)}</strong>
-    <button class="btn secondary" data-action="month" data-value="1" aria-label="Próximo mês">›</button>
-  </div>`;
-
-const bar = (pct, level = 'ok') => `<div class="bar"><span class="${level}" style="width:${Math.min(pct, 100)}%"></span></div>`;
-
 const goalName = id => state.goals.find(g => g.id === id)?.name ?? 'Meta excluída';
 
 const financeViews = {
-  entries() {
+  lancamentos() {
     const s = monthSummary(ui.financeMonth);
     const cats = Object.entries(s.byCategory).sort((a, b) => b[1] - a[1]);
     const txs = [...s.txs].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || '').localeCompare(a.createdAt || ''));
@@ -429,11 +666,12 @@ const financeViews = {
       ${list(txs.map(t => {
         const label = t.goalId ? `${t.type === 'out' ? 'Guardado' : 'Retirado'}: ${goalName(t.goalId)}` : t.description || t.category;
         const cls = t.goalId ? '' : t.type === 'in' ? 'pos' : 'neg';
+        const badge = t.goalId ? '🎯 Meta' : t.billId ? `💳 ${esc(t.category)}` : esc(t.category);
         return `
         <li class="item">
           <div class="body">
             <div class="title">${esc(label)}</div>
-            <div class="meta"><span>${fmtShortDate(t.date)}</span><span class="badge">${t.goalId ? '🎯 Meta' : esc(t.category)}</span></div>
+            <div class="meta"><span>${fmtShortDate(t.date)}</span><span class="badge">${badge}</span></div>
           </div>
           <span class="amount ${cls}">${t.type === 'in' ? '+' : '−'} ${money(t.amount)}</span>
           <button class="icon-btn" data-action="delete-tx" data-id="${t.id}" aria-label="Excluir lançamento">✕</button>
@@ -442,7 +680,54 @@ const financeViews = {
     `;
   },
 
-  budget() {
+  compromissos() {
+    const key = ui.financeMonth;
+    const rows = billsForMonth(key, todayISO());
+    const paid = rows.reduce((s, r) => s + (r.payment ? r.payment.amount : 0), 0);
+    const toPay = rows.reduce((s, r) => s + (r.payment ? 0 : r.bill.amount), 0);
+
+    return `
+      ${monthNav()}
+      ${rows.length ? `
+        <section class="stats">
+          <div class="card stat"><div class="label">Total</div><div class="value">${money(paid + toPay)}</div></div>
+          <div class="card stat"><div class="label">Pago</div><div class="value pos">${money(paid)}</div></div>
+          <div class="card stat"><div class="label">A pagar</div><div class="value ${toPay ? 'neg' : ''}">${money(toPay)}</div></div>
+        </section>` : ''}
+
+      <h2>Contas do mês</h2>
+      ${list(rows.map(r => `
+        <li class="item wrap ${r.payment ? 'done' : ''}">
+          <div class="body">
+            <div class="title">${r.payment ? '✓ ' : ''}${esc(r.bill.name)}</div>
+            <div class="meta"><span>${billLabel(r)}</span><span class="badge">${esc(r.bill.category)}</span></div>
+          </div>
+          ${r.payment
+            ? `<button class="icon-btn" data-action="delete-tx" data-id="${r.payment.id}" aria-label="Desfazer pagamento" title="Desfazer pagamento">↺</button>`
+            : `<button class="icon-btn" data-action="delete-bill" data-id="${r.bill.id}" aria-label="Excluir compromisso">✕</button>
+               <form class="inline pay" data-form="bill-pay">
+                 <input type="hidden" name="billId" value="${r.bill.id}">
+                 <input type="hidden" name="month" value="${key}">
+                 <input type="text" name="amount" inputmode="decimal" value="${moneyInput(r.bill.amount)}" required aria-label="Valor pago" style="flex:1 1 100px">
+                 <button class="btn" type="submit">Pagar</button>
+               </form>`}
+        </li>`), 'Nenhum compromisso cadastrado.')}
+
+      <h2>Novo compromisso</h2>
+      <form class="inline card" data-form="bill">
+        <input class="grow" type="text" name="name" placeholder="Ex.: Aluguel, luz, internet" required maxlength="60" aria-label="Nome">
+        <input type="text" name="amount" inputmode="decimal" placeholder="Valor (R$)" required aria-label="Valor" style="flex:1 1 110px">
+        <label class="muted" style="display:flex;align-items:center;gap:6px">Dia <input type="number" name="day" min="1" max="31" value="10" required aria-label="Dia do vencimento" style="width:70px"></label>
+        <select name="category" aria-label="Categoria" style="flex:1 1 140px">
+          ${CATEGORIES.out.map(c => `<option ${c === 'Contas' ? 'selected' : ''}>${c}</option>`).join('')}
+        </select>
+        <button class="btn" type="submit">Adicionar</button>
+      </form>
+      <p class="muted">Contas que se repetem todo mês. Para contas de valor variável (luz, água), ajuste o valor na hora de pagar — o pagamento vira uma despesa em Lançamentos.</p>
+    `;
+  },
+
+  orcamento() {
     const lines = budgetLines(ui.financeMonth);
     const { byCategory } = monthSummary(ui.financeMonth);
     const totalLimit = lines.reduce((s, l) => s + l.limit, 0);
@@ -487,18 +772,18 @@ const financeViews = {
     `;
   },
 
-  goals() {
+  metas() {
     const today = todayISO();
     const items = state.goals.map(g => {
       const saved = goalSaved(g.id);
       const pct = Math.round((saved / g.target) * 100);
       const remaining = g.target - saved;
-      let hint = '';
+      let hint;
       if (remaining <= 0) hint = '🎉 Meta atingida!';
       else if (g.deadline) {
         const months = monthsLeft(g.deadline, today);
         hint = months > 0
-          ? `Guarde ${money(Math.ceil(remaining / months))}/mês até ${fmtShortDate(g.deadline)} (${months} ${months > 1 ? 'meses' : 'mês'})`
+          ? `Guarde ${money(Math.ceil(remaining / months))}/mês até ${fmtShortDate(g.deadline)} (${plural(months, 'mês', 'meses')})`
           : `<span class="neg">Prazo vencido em ${fmtShortDate(g.deadline)} · faltam ${money(remaining)}</span>`;
       } else hint = `Faltam ${money(remaining)}`;
 
@@ -535,21 +820,33 @@ const financeViews = {
   },
 };
 
-/* ---------- renderização ---------- */
+/* ---------- navegação e renderização ---------- */
 
 const viewEl = document.getElementById('view');
 const titleEl = document.getElementById('view-title');
 
+function parseRoute() {
+  const [view, arg] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+  return { view: views[view] ? view : 'home', arg };
+}
+
+function viewTitle(view, arg) {
+  if (view === 'area') {
+    const a = areaById(arg);
+    return a ? `${a.emoji} ${a.name}` : 'Card';
+  }
+  return { home: 'Meu Dia', adiados: '⏳ Adiados', financas: '💰 Finanças', mais: 'Configurações' }[view];
+}
+
 function render() {
-  titleEl.textContent = VIEW_TITLES[ui.view];
-  document.getElementById('today-label').textContent = new Date().toLocaleDateString('pt-BR', {
-    weekday: 'long', day: 'numeric', month: 'long',
-  });
-  viewEl.innerHTML = views[ui.view]();
-  document.querySelectorAll('.tabbar button').forEach(b => {
-    if (b.dataset.view === ui.view) b.setAttribute('aria-current', 'page');
-    else b.removeAttribute('aria-current');
-  });
+  const { view, arg } = parseRoute();
+  titleEl.textContent = viewTitle(view, arg);
+  document.getElementById('back').hidden = view === 'home';
+  document.getElementById('settings').hidden = view !== 'home';
+  const dateEl = document.getElementById('today-label');
+  dateEl.hidden = view !== 'home';
+  dateEl.textContent = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+  viewEl.innerHTML = views[view](arg);
 }
 
 function commit() {
@@ -563,7 +860,7 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
 }
 
 /* ---------- ações ---------- */
@@ -571,41 +868,77 @@ function toast(msg) {
 const byId = (arr, id) => arr.find(x => x.id === id);
 
 const actions = {
+  'toggle-item'({ id }) {
+    const it = byId(state.items, id);
+    if (!it) return;
+    const today = todayISO();
+    if (it.log[today]) delete it.log[today];
+    // Semanal/mensal já feito em outro dia do período: desmarcar desfaz esse registro.
+    else if (itemStatus(it, today).done) delete it.log[lastDone(it, today)];
+    else it.log[today] = true;
+    commit();
+  },
+  'delete-item'({ id }) {
+    const it = byId(state.items, id);
+    if (!it || !confirm(`Excluir "${it.name}" e o histórico dele?`)) return;
+    state.items = state.items.filter(x => x.id !== id);
+    commit();
+  },
+  'delete-note'({ id }) {
+    if (!confirm('Excluir esta anotação?')) return;
+    state.notes = state.notes.filter(n => n.id !== id);
+    commit();
+  },
   'toggle-task'({ id }) {
     const t = byId(state.tasks, id);
     if (!t) return;
     t.done = !t.done;
     t.doneAt = t.done ? new Date().toISOString() : null;
+    if (t.done) t.focus = false;
+    commit();
+    if (t.done) toast('Menos uma! ✓');
+  },
+  'focus-task'({ id }) {
+    const t = byId(state.tasks, id);
+    if (!t) return;
+    if (!t.focus && state.tasks.filter(x => x.focus && !x.done).length >= FOCUS_LIMIT) {
+      return toast(`Foco demais vira foco nenhum: no máximo ${FOCUS_LIMIT} por vez.`);
+    }
+    t.focus = !t.focus;
     commit();
   },
   'delete-task'({ id }) {
     state.tasks = state.tasks.filter(t => t.id !== id);
     commit();
   },
-  'task-filter'({ value }) {
-    ui.taskFilter = value;
-    render();
-  },
-  'toggle-habit'({ id, date }) {
-    const h = byId(state.habits, id);
-    if (!h) return;
-    if (h.log[date]) delete h.log[date];
-    else h.log[date] = true;
-    commit();
-  },
-  'delete-habit'({ id }) {
-    const h = byId(state.habits, id);
-    if (!h || !confirm(`Excluir o hábito "${h.name}" e todo o histórico dele?`)) return;
-    state.habits = state.habits.filter(x => x.id !== id);
+  'delete-area'({ id }) {
+    const a = areaById(id);
+    if (!a) return;
+    const n = state.items.filter(i => i.areaId === id).length;
+    if (!confirm(`Excluir o card "${a.name}" com ${plural(n, 'item', 'itens')} e as anotações dele?`)) return;
+    state.areas = state.areas.filter(x => x.id !== id);
+    state.items = state.items.filter(i => i.areaId !== id);
+    state.notes = state.notes.filter(x => x.areaId !== id);
     commit();
   },
   month({ value }) {
     ui.financeMonth = shiftMonth(ui.financeMonth, Number(value));
     render();
   },
-  'finance-tab'({ value }) {
-    ui.financeTab = value;
+  'tx-type'({ value }) {
+    ui.txType = value;
     render();
+  },
+  'delete-tx'({ id }) {
+    state.transactions = state.transactions.filter(t => t.id !== id);
+    commit();
+    toast('Lançamento removido.');
+  },
+  'delete-bill'({ id }) {
+    const b = byId(state.bills, id);
+    if (!b || !confirm(`Excluir o compromisso "${b.name}"? Pagamentos já feitos continuam em Lançamentos.`)) return;
+    state.bills = state.bills.filter(x => x.id !== id);
+    commit();
   },
   'delete-budget'({ value }) {
     delete state.budgets[value];
@@ -617,15 +950,6 @@ const actions = {
     state.goals = state.goals.filter(x => x.id !== id);
     commit();
   },
-  'tx-type'({ value }) {
-    ui.txType = value;
-    render();
-  },
-  'delete-tx'({ id }) {
-    state.transactions = state.transactions.filter(t => t.id !== id);
-    commit();
-    toast('Lançamento excluído.');
-  },
   export() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -635,7 +959,7 @@ const actions = {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   },
   reset() {
-    if (!confirm('Apagar TODAS as tarefas, hábitos e lançamentos? Isso não pode ser desfeito.')) return;
+    if (!confirm('Apagar TODOS os dados? Isso não pode ser desfeito.')) return;
     state = defaultState();
     commit();
     toast('Dados apagados.');
@@ -649,21 +973,46 @@ const forms = {
     state.tasks.push({
       id: uid(),
       title,
+      step: (data.get('step') || '').trim(),
       due: data.get('due') || null,
-      priority: data.get('priority') || 'normal',
+      focus: false,
       done: false,
       doneAt: null,
       createdAt: new Date().toISOString(),
     });
     commit();
-    viewEl.querySelector('[data-form="task"] input[name="title"]')?.focus();
+    toast('Anotado em Adiados.');
   },
-  habit(data) {
+  item(data) {
     const name = data.get('name').trim();
-    const days = data.getAll('days').map(Number);
+    const type = data.get('freq');
+    if (!name || !FREQ_TYPES[type]) return;
+    const freq = { type };
+    if (type === 'weekdays') {
+      freq.days = data.getAll('days').map(Number);
+      if (!freq.days.length) return toast('Escolha pelo menos um dia da semana.');
+    }
+    if (type === 'interval') {
+      freq.every = Math.round(Number(data.get('every')));
+      if (!(freq.every >= 1 && freq.every <= 365)) return toast('Informe de 1 a 365 dias.');
+    }
+    const log = {};
+    const last = type === 'interval' && data.get('last');
+    if (last && last <= todayISO()) log[last] = true;
+    state.items.push(newItem(data.get('areaId'), name, freq, log));
+    commit();
+  },
+  note(data) {
+    const text = data.get('text').trim();
+    if (!text) return;
+    state.notes.push({ id: uid(), areaId: data.get('areaId'), date: data.get('date') || todayISO(), text, createdAt: new Date().toISOString() });
+    commit();
+    toast('Anotação salva.');
+  },
+  area(data) {
+    const name = data.get('name').trim();
     if (!name) return;
-    if (!days.length) return toast('Escolha pelo menos um dia da semana.');
-    state.habits.push({ id: uid(), name, days, log: {}, createdAt: new Date().toISOString() });
+    state.areas.push({ id: uid(), name, emoji: data.get('emoji').trim() || '📌' });
     commit();
   },
   tx(data) {
@@ -683,6 +1032,41 @@ const forms = {
     commit();
     const alert = ui.txType === 'out' && budgetAlert(data.get('category'), monthKey(date));
     toast(alert || `${ui.txType === 'in' ? 'Receita' : 'Despesa'} de ${money(amount)} lançada.`);
+  },
+  bill(data) {
+    const name = data.get('name').trim();
+    const amount = parseMoney(data.get('amount'));
+    const day = Math.round(Number(data.get('day')));
+    if (!name) return;
+    if (amount === null) return toast('Valor inválido. Ex.: 120,00');
+    if (!(day >= 1 && day <= 31)) return toast('Dia do vencimento deve ser de 1 a 31.');
+    // Vencimento deste mês já passou: provavelmente já foi pago fora do app,
+    // então começa a contar no mês seguinte em vez de nascer "vencido".
+    const today = todayISO();
+    let startMonth = ui.financeMonth;
+    const bill = { id: uid(), name, amount, day, category: data.get('category'), createdAt: new Date().toISOString() };
+    if (startMonth <= monthKey(today) && billDue(bill, monthKey(today)) < today) startMonth = shiftMonth(monthKey(today), 1);
+    state.bills.push({ ...bill, startMonth });
+    ui.financeMonth = startMonth;
+    commit();
+    if (startMonth > monthKey(today)) toast(`O vencimento deste mês já passou: "${name}" começa a contar em ${fmtMonth(startMonth).toLowerCase()}.`);
+  },
+  'bill-pay'(data) {
+    const bill = byId(state.bills, data.get('billId'));
+    const key = data.get('month');
+    const amount = parseMoney(data.get('amount'));
+    if (!bill) return;
+    if (amount === null) return toast('Valor inválido.');
+    if (state.transactions.some(t => t.billId === bill.id && t.billMonth === key)) return;
+    // Mês passado (preenchendo histórico): registra no vencimento. Senão, hoje.
+    const today = todayISO();
+    const date = key < monthKey(today) ? billDue(bill, key) : today;
+    state.transactions.push({
+      id: uid(), type: 'out', amount, category: bill.category, description: bill.name,
+      billId: bill.id, billMonth: key, date, createdAt: new Date().toISOString(),
+    });
+    commit();
+    toast(budgetAlert(bill.category, monthKey(date)) || `${bill.name}: pago ${money(amount)}.`);
   },
   budget(data) {
     const limit = parseMoney(data.get('limit'));
@@ -705,27 +1089,13 @@ const forms = {
     if (amount === null) return toast('Valor inválido. Ex.: 200');
     if (type === 'in' && amount > goalSaved(goalId)) return toast('Não dá para retirar mais do que está guardado.');
     state.transactions.push({
-      id: uid(),
-      type,
-      amount,
-      category: 'Metas',
-      description: '',
-      goalId,
-      date: todayISO(),
-      createdAt: new Date().toISOString(),
+      id: uid(), type, amount, category: 'Metas', description: '', goalId,
+      date: todayISO(), createdAt: new Date().toISOString(),
     });
     commit();
     toast(`${type === 'out' ? 'Guardado' : 'Retirado'}: ${money(amount)}.`);
   },
 };
-
-document.querySelector('.tabbar').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-view]');
-  if (!btn) return;
-  ui.view = btn.dataset.view;
-  render();
-  window.scrollTo(0, 0);
-});
 
 viewEl.addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
@@ -740,12 +1110,16 @@ viewEl.addEventListener('submit', e => {
 });
 
 viewEl.addEventListener('change', async e => {
+  if (e.target.name === 'freq') {
+    e.target.form.dataset.freq = e.target.value;
+    return;
+  }
   if (e.target.dataset.action !== 'import') return;
   const file = e.target.files[0];
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    if (!data || !DATA_KEYS.some(k => Array.isArray(data[k]))) throw new Error('formato');
+    if (!isPlainObject(data) || !DATA_KEYS.some(k => Array.isArray(data[k]))) throw new Error('formato');
     if (!confirm('Substituir os dados atuais pelo conteúdo do backup?')) return;
     state = normalize(data);
     commit();
@@ -755,11 +1129,17 @@ viewEl.addEventListener('change', async e => {
   }
 });
 
+window.addEventListener('hashchange', () => {
+  render();
+  window.scrollTo(0, 0);
+});
+
 // Ao voltar para o app (ex.: virou o dia), atualiza a tela.
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) render();
 });
 
+save(); // grava a migração da v1, se houve
 render();
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

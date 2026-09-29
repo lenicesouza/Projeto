@@ -1,6 +1,6 @@
 # Meu Dia — assistente pessoal
 
-Tarefas, rotina (hábitos) e finanças pessoais em um só lugar. Funciona no celular e no computador, inclusive offline, e pode ser "instalado" na tela inicial (PWA).
+Painel pessoal em cards: rotina da casa, cuidados pessoais, inglês, coisas que você vive adiando e finanças. Funciona no celular e no computador, inclusive offline, e pode ser "instalado" na tela inicial (PWA).
 
 ## Como usar
 
@@ -17,15 +17,34 @@ Para usar no celular, publique a pasta em qualquer hospedagem estática (GitHub 
 
 ## O que tem
 
-| Aba | Função |
+A tela inicial tem **"Para hoje"** (o que vence hoje em todos os cards) e os **cards**. Cada card abre sua própria tela.
+
+| Card | Função |
 | --- | --- |
-| **Hoje** | Resumo do dia: tarefas de hoje e atrasadas, hábitos programados, saldo do mês. Adição rápida de tarefa. |
-| **Tarefas** | Tarefas com data e prioridade, agrupadas em Atrasadas / Hoje / Próximas / Sem data. |
-| **Rotina** | Hábitos com dias da semana, marcação dos últimos 7 dias e contagem de sequência (🔥). |
-| **Finanças → Lançamentos** | Receitas e despesas por mês, saldo livre, gastos por categoria. |
-| **Finanças → Orçamento** | Limite mensal por categoria, com barra de progresso e alerta ao passar de 80% e de 100% (na hora de lançar e na tela Hoje). |
-| **Finanças → Metas** | Metas de economia com valor alvo e prazo opcional. Mostra quanto guardar por mês para chegar lá. |
-| **Mais** | Exportar/importar backup em JSON e apagar dados. |
+| 🏠 **Casa** | Checklist de tarefas domésticas com frequência (diária, dias da semana, semanal, mensal ou a cada N dias). |
+| 💆 **Cuidados** | Mesma lógica, para autocuidado (ex.: hidratar o cabelo 1x por semana, sobrancelha a cada 15 dias). |
+| 🇬🇧 **Inglês** | Rotina de aulas com check + **anotações** datadas (o que viu na aula, palavras novas). |
+| ⏳ **Adiados** | Pendências sem data certa. Mostra há quantos dias você adia cada uma, um "menor próximo passo" e até 3 em **foco da semana**. |
+| 💰 **Finanças** | Lançamentos, **compromissos** (contas fixas do mês, com vencimento e pagamento), orçamento por categoria e metas. |
+| ⚙️ **Configurações** | Criar/excluir cards de rotina (ex.: Academia, Plantas), backup e apagar dados. |
+
+Todo card de rotina também tem anotações.
+
+## Como as frequências funcionam
+
+| Frequência | Quando está "feito" | Quando aparece em "Para hoje" |
+| --- | --- | --- |
+| Todo dia | Marcado hoje | Todos os dias |
+| Dias da semana | Marcado no dia programado | Só nos dias escolhidos |
+| 1x por semana | Marcado em qualquer dia de segunda a domingo | Só no sábado e domingo, se ainda não feito |
+| 1x por mês | Marcado em qualquer dia do mês | Só nos 2 últimos dias do mês, se ainda não feito |
+| A cada N dias | Conta a partir da última vez | Quando vence ou está atrasado |
+
+Semanais e mensais só entram em "Para hoje" no fim do prazo **de propósito**: se aparecessem desde segunda, a tela inicial viraria uma lista permanente de pendências. Eles aparecem no card o tempo todo.
+
+## Compromissos (contas fixas)
+
+Cadastre nome, valor, dia do vencimento e categoria. Todo mês a conta aparece em *Finanças → Compromissos*; ao **pagar**, você confirma o valor (útil para luz/água, que variam) e isso vira uma despesa em Lançamentos. Contas que vencem em até 3 dias ou já venceram aparecem em "Para hoje". Se ao cadastrar o vencimento do mês já passou, a conta começa a contar no mês seguinte.
 
 ## Como o dinheiro das metas é contado
 
@@ -35,8 +54,9 @@ Para usar no celular, publique a pasta em qualquer hospedagem estática (GitHub 
 
 Não há sincronização. Use o **celular como aparelho principal**. Para ver os dados no computador: *Mais → Exportar backup* no celular e *Importar backup* no computador. A importação **substitui** tudo que havia no destino.
 
-## Limitações conhecidas (intencionais nesta 1ª versão)
+## Limitações conhecidas (intencionais nesta versão)
 
+- **Versões antigas:** os hábitos da primeira versão viram automaticamente o card 🔁 Hábitos, com o histórico.
 - **Os dados ficam só no navegador** (`localStorage`). Trocar de aparelho, limpar o navegador ou usar aba anônima = perder dados. Por isso existe o backup — use-o.
 - **Sem sincronização** entre celular e computador.
 - **Sem notificações/lembretes.** Navegadores limitam notificações de apps web sem servidor, especialmente no iPhone.
@@ -45,9 +65,8 @@ Não há sincronização. Use o **celular como aparelho principal**. Para ver os
 ## Próximos passos sugeridos (em ordem)
 
 1. Usar por 2–3 semanas e anotar o que realmente faz falta.
-2. Tarefas e lançamentos **recorrentes** (conta de luz todo dia 10, etc.).
-3. Sincronização em nuvem com login (ex.: Supabase/Firebase) — só quando o uso justificar.
-4. Lembretes/notificações (exige servidor ou app nativo).
+2. Sincronização em nuvem com login (ex.: Supabase/Firebase) — só quando o uso justificar.
+3. Lembretes/notificações (exige servidor ou app nativo).
 
 ## Estrutura
 

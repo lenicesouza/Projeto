@@ -290,3 +290,21 @@ input:focus-visible, select:focus-visible, button:focus-visible {
   .stats { grid-template-columns: 1fr 1fr; }
   .stats .stat:last-child { grid-column: 1 / -1; }
 }
+
+/* ---------- orçamento e metas ---------- */
+.segmented { margin-top: 0; }
+
+.stats.four { grid-template-columns: repeat(2, 1fr); }
+.stats.four .stat:last-child { grid-column: auto; }
+@media (min-width: 600px) { .stats.four { grid-template-columns: repeat(4, 1fr); } }
+
+.top-line { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.92rem; }
+.item .body > * + * { margin-top: 6px; }
+
+.bar > span.warn { background: var(--warning); }
+.bar > span.over { background: var(--danger); }
+.bar > span.done { background: var(--success); }
+
+.alert { border-color: var(--warning); font-size: 0.92rem; }
+.top-line .title { overflow-wrap: normal; min-width: 0; }
+.top-line > :last-child { white-space: nowrap; }

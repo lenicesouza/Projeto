@@ -63,14 +63,18 @@ function parseMoney(input) {
 
 /* ---------- estado e persistência ---------- */
 
-const defaultState = () => ({ version: 1, tasks: [], habits: [], transactions: [] });
+// budgets: { categoria: limite mensal em centavos } — vale para todos os meses.
+// goals: metas de economia; o valor guardado vem dos lançamentos com goalId.
+const defaultState = () => ({ version: 1, tasks: [], habits: [], transactions: [], budgets: {}, goals: [] });
+const DATA_KEYS = ['tasks', 'habits', 'transactions', 'goals'];
 
 function normalize(data) {
   const s = defaultState();
   if (data && typeof data === 'object') {
-    for (const k of ['tasks', 'habits', 'transactions']) {
+    for (const k of DATA_KEYS) {
       if (Array.isArray(data[k])) s[k] = data[k];
     }
+    if (data.budgets && typeof data.budgets === 'object' && !Array.isArray(data.budgets)) s.budgets = data.budgets;
   }
   return s;
 }
@@ -99,6 +103,7 @@ const ui = {
   taskFilter: 'pending',
   financeMonth: monthKey(todayISO()),
   txType: 'out',
+  financeTab: 'entries',
 };
 
 /* ---------- regras de negócio ---------- */
@@ -135,15 +140,47 @@ function monthSummary(key) {
   const txs = state.transactions.filter(t => monthKey(t.date) === key);
   let income = 0;
   let expense = 0;
+  let saved = 0;
   const byCategory = {};
   for (const t of txs) {
-    if (t.type === 'in') income += t.amount;
+    // Dinheiro movido para metas não é receita nem despesa: é "guardado".
+    if (t.goalId) saved += t.type === 'out' ? t.amount : -t.amount;
+    else if (t.type === 'in') income += t.amount;
     else {
       expense += t.amount;
       byCategory[t.category] = (byCategory[t.category] || 0) + t.amount;
     }
   }
-  return { txs, income, expense, balance: income - expense, byCategory };
+  return { txs, income, expense, saved, balance: income - expense - saved, byCategory };
+}
+
+function budgetLines(key) {
+  const { byCategory } = monthSummary(key);
+  return Object.entries(state.budgets)
+    .map(([category, limit]) => {
+      const spent = byCategory[category] || 0;
+      const pct = Math.round((spent / limit) * 100);
+      return { category, limit, spent, pct, level: pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok' };
+    })
+    .sort((a, b) => b.pct - a.pct);
+}
+
+const goalSaved = id =>
+  state.transactions.reduce((sum, t) => (t.goalId === id ? sum + (t.type === 'out' ? t.amount : -t.amount) : sum), 0);
+
+// Meses restantes contando o mês atual (prazo neste mês = 1).
+function monthsLeft(deadline, today) {
+  const a = parseISODate(today);
+  const b = parseISODate(deadline);
+  return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
+}
+
+function budgetAlert(category, key) {
+  const line = budgetLines(key).find(l => l.category === category);
+  if (!line || line.level === 'ok') return null;
+  return line.level === 'over'
+    ? `⚠️ Orçamento de ${category} estourado: ${money(line.spent)} de ${money(line.limit)}.`
+    : `Atenção: ${line.pct}% do orçamento de ${category} já foi usado.`;
 }
 
 /* ---------- componentes ---------- */
@@ -206,6 +243,7 @@ const views = {
     const habits = state.habits.filter(h => isScheduled(h, today));
     const habitsDone = habits.filter(h => h.log[today]).length;
     const { balance } = monthSummary(monthKey(today));
+    const budgetWarnings = budgetLines(monthKey(today)).filter(l => l.level !== 'ok');
 
     return `
       <section class="stats">
@@ -215,6 +253,11 @@ const views = {
         <div class="card stat"><div class="label">Saldo do mês</div>
           <div class="value ${balance < 0 ? 'neg' : 'pos'}">${money(balance)}</div></div>
       </section>
+
+      ${budgetWarnings.length ? `
+        <div class="card alert stack" style="margin-top:10px">
+          ${budgetWarnings.map(l => `<div>${l.level === 'over' ? '⚠️' : '🟡'} <b>${esc(l.category)}</b>: ${money(l.spent)} de ${money(l.limit)} (${l.pct}%)</div>`).join('')}
+        </div>` : ''}
 
       <h2>Foco de hoje</h2>
       <div class="stack">
@@ -299,22 +342,63 @@ const views = {
   },
 
   finance() {
+    const tabs = { entries: 'Lançamentos', budget: 'Orçamento', goals: 'Metas' };
+    const header = `
+      <div class="chips segmented" role="group" aria-label="Seção de finanças">
+        ${Object.entries(tabs).map(([k, label]) =>
+          `<button class="chip" data-action="finance-tab" data-value="${k}" aria-pressed="${ui.financeTab === k}">${label}</button>`).join('')}
+      </div>`;
+    return header + financeViews[ui.financeTab]();
+  },
+
+  more() {
+    const counts = `${state.tasks.length} tarefas · ${state.habits.length} hábitos · ${state.transactions.length} lançamentos · ${state.goals.length} metas`;
+    return `
+      <div class="card stack">
+        <strong>Seus dados</strong>
+        <p class="muted" style="margin:0">Tudo fica salvo <b>apenas neste navegador</b>. Se você limpar os dados do navegador
+          ou trocar de aparelho, perde o histórico — faça backup regularmente.</p>
+        <p class="muted" style="margin:0">${counts}</p>
+        <div class="inline" style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" data-action="export">Exportar backup</button>
+          <label class="btn secondary" style="display:inline-flex;align-items:center">
+            Importar backup<input type="file" accept="application/json,.json" data-action="import" hidden>
+          </label>
+        </div>
+      </div>
+      <h2>Zona de perigo</h2>
+      <div class="card"><button class="btn danger" data-action="reset">Apagar todos os dados</button></div>
+    `;
+  },
+};
+
+/* ---------- finanças: subabas ---------- */
+
+const monthNav = () => `
+  <div class="month-nav">
+    <button class="btn secondary" data-action="month" data-value="-1" aria-label="Mês anterior">‹</button>
+    <strong>${fmtMonth(ui.financeMonth)}</strong>
+    <button class="btn secondary" data-action="month" data-value="1" aria-label="Próximo mês">›</button>
+  </div>`;
+
+const bar = (pct, level = 'ok') => `<div class="bar"><span class="${level}" style="width:${Math.min(pct, 100)}%"></span></div>`;
+
+const goalName = id => state.goals.find(g => g.id === id)?.name ?? 'Meta excluída';
+
+const financeViews = {
+  entries() {
     const s = monthSummary(ui.financeMonth);
     const cats = Object.entries(s.byCategory).sort((a, b) => b[1] - a[1]);
     const txs = [...s.txs].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || '').localeCompare(a.createdAt || ''));
     const defaultDate = ui.financeMonth === monthKey(todayISO()) ? todayISO() : `${ui.financeMonth}-01`;
 
     return `
-      <div class="month-nav">
-        <button class="btn secondary" data-action="month" data-value="-1" aria-label="Mês anterior">‹</button>
-        <strong>${fmtMonth(ui.financeMonth)}</strong>
-        <button class="btn secondary" data-action="month" data-value="1" aria-label="Próximo mês">›</button>
-      </div>
-
-      <section class="stats">
+      ${monthNav()}
+      <section class="stats four">
         <div class="card stat"><div class="label">Receitas</div><div class="value pos">${money(s.income)}</div></div>
         <div class="card stat"><div class="label">Despesas</div><div class="value neg">${money(s.expense)}</div></div>
-        <div class="card stat"><div class="label">Saldo</div><div class="value ${s.balance < 0 ? 'neg' : 'pos'}">${money(s.balance)}</div></div>
+        <div class="card stat"><div class="label">Guardado em metas</div><div class="value">${money(s.saved)}</div></div>
+        <div class="card stat"><div class="label">Saldo livre</div><div class="value ${s.balance < 0 ? 'neg' : 'pos'}">${money(s.balance)}</div></div>
       </section>
 
       <h2>Novo lançamento</h2>
@@ -337,41 +421,116 @@ const views = {
         <div class="card bars">
           ${cats.map(([cat, v]) => {
             const pct = Math.round((v / s.expense) * 100);
-            return `<div class="bar-row"><div class="top"><span>${esc(cat)}</span><span>${money(v)} · ${pct}%</span></div>
-              <div class="bar"><span style="width:${pct}%"></span></div></div>`;
+            return `<div class="bar-row"><div class="top"><span>${esc(cat)}</span><span>${money(v)} · ${pct}%</span></div>${bar(pct)}</div>`;
           }).join('')}
         </div>` : ''}
 
       <h2>Lançamentos</h2>
-      ${list(txs.map(t => `
+      ${list(txs.map(t => {
+        const label = t.goalId ? `${t.type === 'out' ? 'Guardado' : 'Retirado'}: ${goalName(t.goalId)}` : t.description || t.category;
+        const cls = t.goalId ? '' : t.type === 'in' ? 'pos' : 'neg';
+        return `
         <li class="item">
           <div class="body">
-            <div class="title">${esc(t.description || t.category)}</div>
-            <div class="meta"><span>${fmtShortDate(t.date)}</span><span class="badge">${esc(t.category)}</span></div>
+            <div class="title">${esc(label)}</div>
+            <div class="meta"><span>${fmtShortDate(t.date)}</span><span class="badge">${t.goalId ? '🎯 Meta' : esc(t.category)}</span></div>
           </div>
-          <span class="amount ${t.type === 'in' ? 'pos' : 'neg'}">${t.type === 'in' ? '+' : '−'} ${money(t.amount)}</span>
+          <span class="amount ${cls}">${t.type === 'in' ? '+' : '−'} ${money(t.amount)}</span>
           <button class="icon-btn" data-action="delete-tx" data-id="${t.id}" aria-label="Excluir lançamento">✕</button>
-        </li>`), 'Nenhum lançamento neste mês.')}
+        </li>`;
+      }), 'Nenhum lançamento neste mês.')}
     `;
   },
 
-  more() {
-    const counts = `${state.tasks.length} tarefas · ${state.habits.length} hábitos · ${state.transactions.length} lançamentos`;
+  budget() {
+    const lines = budgetLines(ui.financeMonth);
+    const { byCategory } = monthSummary(ui.financeMonth);
+    const totalLimit = lines.reduce((s, l) => s + l.limit, 0);
+    const totalSpent = lines.reduce((s, l) => s + l.spent, 0);
+    const unbudgeted = Object.entries(byCategory).filter(([c]) => !(c in state.budgets));
+
     return `
-      <div class="card stack">
-        <strong>Seus dados</strong>
-        <p class="muted" style="margin:0">Tudo fica salvo <b>apenas neste navegador</b>. Se você limpar os dados do navegador
-          ou trocar de aparelho, perde o histórico — faça backup regularmente.</p>
-        <p class="muted" style="margin:0">${counts}</p>
-        <div class="inline" style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn" data-action="export">Exportar backup</button>
-          <label class="btn secondary" style="display:inline-flex;align-items:center">
-            Importar backup<input type="file" accept="application/json,.json" data-action="import" hidden>
-          </label>
-        </div>
-      </div>
-      <h2>Zona de perigo</h2>
-      <div class="card"><button class="btn danger" data-action="reset">Apagar todos os dados</button></div>
+      ${monthNav()}
+      ${lines.length ? `
+        <section class="stats">
+          <div class="card stat"><div class="label">Orçado</div><div class="value">${money(totalLimit)}</div></div>
+          <div class="card stat"><div class="label">Gasto</div><div class="value">${money(totalSpent)}</div></div>
+          <div class="card stat"><div class="label">Disponível</div>
+            <div class="value ${totalLimit - totalSpent < 0 ? 'neg' : 'pos'}">${money(totalLimit - totalSpent)}</div></div>
+        </section>` : ''}
+
+      <h2>Limite mensal por categoria</h2>
+      <form class="inline card" data-form="budget">
+        <select name="category" aria-label="Categoria" style="flex:1 1 140px">
+          ${CATEGORIES.out.map(c => `<option>${c}</option>`).join('')}
+        </select>
+        <input type="text" name="limit" inputmode="decimal" placeholder="Limite (R$)" required aria-label="Limite mensal" style="flex:1 1 110px">
+        <button class="btn" type="submit">Salvar</button>
+      </form>
+      <p class="muted">O limite vale para todos os meses. Salvar de novo a mesma categoria substitui o valor.</p>
+
+      ${list(lines.map(l => {
+        const rest = l.limit - l.spent;
+        return `
+        <li class="item">
+          <div class="body">
+            <div class="top-line"><span class="title">${esc(l.category)}</span><span>${money(l.spent)} / ${money(l.limit)}</span></div>
+            ${bar(l.pct, l.level)}
+            <div class="meta"><span class="${l.level === 'over' ? 'neg' : ''}">${rest >= 0 ? `Restam ${money(rest)}` : `Estourou ${money(-rest)}`} · ${l.pct}%</span></div>
+          </div>
+          <button class="icon-btn" data-action="delete-budget" data-value="${esc(l.category)}" aria-label="Remover orçamento de ${esc(l.category)}">✕</button>
+        </li>`;
+      }), 'Nenhum orçamento definido. Comece pelas 2 ou 3 categorias em que mais gasta.')}
+
+      ${unbudgeted.length ? `<p class="muted">Gastos sem orçamento neste mês: ${unbudgeted
+        .map(([c, v]) => `${esc(c)} ${money(v)}`).join(' · ')}</p>` : ''}
+    `;
+  },
+
+  goals() {
+    const today = todayISO();
+    const items = state.goals.map(g => {
+      const saved = goalSaved(g.id);
+      const pct = Math.round((saved / g.target) * 100);
+      const remaining = g.target - saved;
+      let hint = '';
+      if (remaining <= 0) hint = '🎉 Meta atingida!';
+      else if (g.deadline) {
+        const months = monthsLeft(g.deadline, today);
+        hint = months > 0
+          ? `Guarde ${money(Math.ceil(remaining / months))}/mês até ${fmtShortDate(g.deadline)} (${months} ${months > 1 ? 'meses' : 'mês'})`
+          : `<span class="neg">Prazo vencido em ${fmtShortDate(g.deadline)} · faltam ${money(remaining)}</span>`;
+      } else hint = `Faltam ${money(remaining)}`;
+
+      return `
+        <li class="card stack">
+          <div class="top-line">
+            <strong class="title">${esc(g.name)}</strong>
+            <button class="icon-btn" data-action="delete-goal" data-id="${g.id}" aria-label="Excluir meta">✕</button>
+          </div>
+          <div class="top-line"><span>${money(saved)} de ${money(g.target)}</span><span>${pct}%</span></div>
+          ${bar(pct, remaining <= 0 ? 'done' : 'ok')}
+          <div class="meta muted">${hint}</div>
+          <form class="inline" data-form="goal-tx">
+            <input type="hidden" name="goalId" value="${g.id}">
+            <input type="text" name="amount" inputmode="decimal" placeholder="Valor (R$)" required aria-label="Valor para ${esc(g.name)}" style="flex:1 1 90px">
+            <button class="btn" type="submit" name="dir" value="out">Guardar</button>
+            <button class="btn secondary" type="submit" name="dir" value="in">Retirar</button>
+          </form>
+        </li>`;
+    });
+
+    return `
+      <h2>Nova meta</h2>
+      <form class="inline card" data-form="goal">
+        <input class="grow" type="text" name="name" placeholder="Ex.: Reserva de emergência" required maxlength="80" aria-label="Nome da meta">
+        <input type="text" name="target" inputmode="decimal" placeholder="Valor alvo (R$)" required aria-label="Valor alvo" style="flex:1 1 150px">
+        <label class="muted" style="display:flex;align-items:center;gap:6px">Prazo <input type="date" name="deadline" aria-label="Prazo (opcional)"></label>
+        <button class="btn" type="submit">Criar</button>
+      </form>
+      <p class="muted">Quando você "guarda" dinheiro numa meta, ele sai do saldo livre do mês, sem contar como despesa.</p>
+      <h2>Suas metas</h2>
+      ${state.goals.length ? `<ul class="list">${items.join('')}</ul>` : '<p class="empty">Nenhuma meta ainda.</p>'}
     `;
   },
 };
@@ -444,6 +603,20 @@ const actions = {
     ui.financeMonth = shiftMonth(ui.financeMonth, Number(value));
     render();
   },
+  'finance-tab'({ value }) {
+    ui.financeTab = value;
+    render();
+  },
+  'delete-budget'({ value }) {
+    delete state.budgets[value];
+    commit();
+  },
+  'delete-goal'({ id }) {
+    const g = byId(state.goals, id);
+    if (!g || !confirm(`Excluir a meta "${g.name}"? Os lançamentos já feitos continuam no histórico.`)) return;
+    state.goals = state.goals.filter(x => x.id !== id);
+    commit();
+  },
   'tx-type'({ value }) {
     ui.txType = value;
     render();
@@ -508,7 +681,41 @@ const forms = {
     });
     ui.financeMonth = monthKey(date);
     commit();
-    toast(`${ui.txType === 'in' ? 'Receita' : 'Despesa'} de ${money(amount)} lançada.`);
+    const alert = ui.txType === 'out' && budgetAlert(data.get('category'), monthKey(date));
+    toast(alert || `${ui.txType === 'in' ? 'Receita' : 'Despesa'} de ${money(amount)} lançada.`);
+  },
+  budget(data) {
+    const limit = parseMoney(data.get('limit'));
+    if (limit === null) return toast('Limite inválido. Ex.: 800');
+    state.budgets[data.get('category')] = limit;
+    commit();
+  },
+  goal(data) {
+    const name = data.get('name').trim();
+    const target = parseMoney(data.get('target'));
+    if (!name) return;
+    if (target === null) return toast('Valor alvo inválido. Ex.: 5.000');
+    state.goals.push({ id: uid(), name, target, deadline: data.get('deadline') || null, createdAt: new Date().toISOString() });
+    commit();
+  },
+  'goal-tx'(data, submitter) {
+    const goalId = data.get('goalId');
+    const type = submitter?.value === 'in' ? 'in' : 'out';
+    const amount = parseMoney(data.get('amount'));
+    if (amount === null) return toast('Valor inválido. Ex.: 200');
+    if (type === 'in' && amount > goalSaved(goalId)) return toast('Não dá para retirar mais do que está guardado.');
+    state.transactions.push({
+      id: uid(),
+      type,
+      amount,
+      category: 'Metas',
+      description: '',
+      goalId,
+      date: todayISO(),
+      createdAt: new Date().toISOString(),
+    });
+    commit();
+    toast(`${type === 'out' ? 'Guardado' : 'Retirado'}: ${money(amount)}.`);
   },
 };
 
@@ -529,7 +736,7 @@ viewEl.addEventListener('click', e => {
 viewEl.addEventListener('submit', e => {
   e.preventDefault();
   const form = e.target;
-  forms[form.dataset.form]?.(new FormData(form));
+  forms[form.dataset.form]?.(new FormData(form), e.submitter);
 });
 
 viewEl.addEventListener('change', async e => {
@@ -538,7 +745,7 @@ viewEl.addEventListener('change', async e => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    if (!data || !['tasks', 'habits', 'transactions'].some(k => Array.isArray(data[k]))) throw new Error('formato');
+    if (!data || !DATA_KEYS.some(k => Array.isArray(data[k]))) throw new Error('formato');
     if (!confirm('Substituir os dados atuais pelo conteúdo do backup?')) return;
     state = normalize(data);
     commit();

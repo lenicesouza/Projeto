@@ -22,8 +22,18 @@ Para usar no celular, publique a pasta em qualquer hospedagem estática (GitHub 
 | **Hoje** | Resumo do dia: tarefas de hoje e atrasadas, hábitos programados, saldo do mês. Adição rápida de tarefa. |
 | **Tarefas** | Tarefas com data e prioridade, agrupadas em Atrasadas / Hoje / Próximas / Sem data. |
 | **Rotina** | Hábitos com dias da semana, marcação dos últimos 7 dias e contagem de sequência (🔥). |
-| **Finanças** | Receitas e despesas por mês, saldo, gastos por categoria. |
+| **Finanças → Lançamentos** | Receitas e despesas por mês, saldo livre, gastos por categoria. |
+| **Finanças → Orçamento** | Limite mensal por categoria, com barra de progresso e alerta ao passar de 80% e de 100% (na hora de lançar e na tela Hoje). |
+| **Finanças → Metas** | Metas de economia com valor alvo e prazo opcional. Mostra quanto guardar por mês para chegar lá. |
 | **Mais** | Exportar/importar backup em JSON e apagar dados. |
+
+## Como o dinheiro das metas é contado
+
+"Guardar" numa meta cria um lançamento ligado a ela. Esse valor **não conta como despesa** (não afeta o orçamento), mas sai do **saldo livre** do mês: `saldo livre = receitas − despesas − guardado`. "Retirar" faz o contrário. Excluir uma meta mantém os lançamentos no histórico.
+
+## Usando no celular e no computador
+
+Não há sincronização. Use o **celular como aparelho principal**. Para ver os dados no computador: *Mais → Exportar backup* no celular e *Importar backup* no computador. A importação **substitui** tudo que havia no destino.
 
 ## Limitações conhecidas (intencionais nesta 1ª versão)
 
@@ -36,9 +46,8 @@ Para usar no celular, publique a pasta em qualquer hospedagem estática (GitHub 
 
 1. Usar por 2–3 semanas e anotar o que realmente faz falta.
 2. Tarefas e lançamentos **recorrentes** (conta de luz todo dia 10, etc.).
-3. Orçamento por categoria com alerta ao estourar.
-4. Sincronização em nuvem com login (ex.: Supabase/Firebase) — só quando o uso justificar.
-5. Lembretes/notificações (exige servidor ou app nativo).
+3. Sincronização em nuvem com login (ex.: Supabase/Firebase) — só quando o uso justificar.
+4. Lembretes/notificações (exige servidor ou app nativo).
 
 ## Estrutura
 

@@ -21,9 +21,9 @@ A tela inicial tem **"Para hoje"** (o que vence hoje em todos os cards) e os **c
 
 | Card | Função |
 | --- | --- |
-| 🏠 **Casa** | Checklist de tarefas domésticas com frequência (diária, dias da semana, semanal, mensal ou a cada N dias). |
-| 💆 **Cuidados** | Mesma lógica, para autocuidado (ex.: hidratar o cabelo 1x por semana, sobrancelha a cada 15 dias). |
-| 🇬🇧 **Inglês** | Rotina de aulas com check + **anotações** datadas (o que viu na aula, palavras novas). |
+| 🏠 **Casa** | Checklist de tarefas domésticas com frequência. Traz **sugestões** prontas (louça, banheiro, roupa de cama, geladeira…) para adicionar com um toque. |
+| 💆 **Cuidados** | Mesma lógica, para autocuidado (ex.: hidratar o cabelo e sobrancelha 1x por semana), também com sugestões. |
+| 🇬🇧 **Inglês** | Meta de prática "20 min, 4x por semana" com contagem da semana e **anotações** datadas (o que praticou, palavras novas). |
 | ⏳ **Adiados** | Pendências sem data certa. Mostra há quantos dias você adia cada uma, um "menor próximo passo" e até 3 em **foco da semana**. |
 | 💰 **Finanças** | Lançamentos, **compromissos** (contas fixas do mês, com vencimento e pagamento), orçamento por categoria e metas. |
 | ⚙️ **Configurações** | Criar/excluir cards de rotina (ex.: Academia, Plantas), backup e apagar dados. |
@@ -37,6 +37,7 @@ Todo card de rotina também tem anotações.
 | Todo dia | Marcado hoje | Todos os dias |
 | Dias da semana | Marcado no dia programado | Só nos dias escolhidos |
 | 1x por semana | Marcado em qualquer dia de segunda a domingo | Só no sábado e domingo, se ainda não feito |
+| X vezes por semana | Marcado hoje; a semana conta as vezes (ex.: 2/4) e a meta é batida ao chegar em X | Todo dia, até bater a meta da semana |
 | 1x por mês | Marcado em qualquer dia do mês | Só nos 2 últimos dias do mês, se ainda não feito |
 | A cada N dias | Conta a partir da última vez | Quando vence ou está atrasado |
 

@@ -371,7 +371,8 @@ details.notes > summary h2 { display: inline-block; }
 details.notes > summary h2::before { content: "▸ "; color: var(--muted); }
 details.notes[open] > summary h2::before { content: "▾ "; }
 
-.only-weekdays, .only-interval { display: none !important; }
+.only-weekdays, .only-interval, .only-times { display: none !important; }
+form[data-freq="times"] .only-times { display: flex !important; align-items: center; gap: 6px; }
 form[data-freq="weekdays"] .only-weekdays { display: block !important; }
 form[data-freq="interval"] .only-interval { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap; }
 

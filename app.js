@@ -18,6 +18,7 @@ const FREQ_TYPES = {
   daily: 'Todo dia',
   weekdays: 'Dias da semana',
   weekly: '1x por semana',
+  times: 'X vezes por semana',
   monthly: '1x por mês',
   interval: 'A cada N dias',
 };
@@ -29,7 +30,39 @@ const DEFAULT_AREAS = [
 const AREA_HINTS = {
   casa: { placeholder: 'Ex.: Trocar roupa de cama', freq: 'weekly' },
   cuidados: { placeholder: 'Ex.: Hidratar o cabelo', freq: 'weekly' },
-  ingles: { placeholder: 'Ex.: Aula de inglês', freq: 'weekdays', notes: 'O que viu na aula, palavras novas, dúvidas…' },
+  ingles: { placeholder: 'Ex.: Praticar inglês (20 min)', freq: 'times', notes: 'O que praticou, palavras novas, dúvidas…' },
+};
+
+// Sugestões com frequências comuns; a pessoa escolhe quais adicionar.
+const SUGGESTIONS = {
+  casa: [
+    ['Lavar a louça', { type: 'daily' }],
+    ['Arrumar a cama', { type: 'daily' }],
+    ['Tirar o lixo', { type: 'interval', every: 2 }],
+    ['Varrer ou aspirar a casa', { type: 'times', per: 2 }],
+    ['Lavar roupa', { type: 'weekly' }],
+    ['Limpar o banheiro', { type: 'weekly' }],
+    ['Passar pano no chão', { type: 'weekly' }],
+    ['Tirar o pó dos móveis', { type: 'weekly' }],
+    ['Trocar as toalhas', { type: 'weekly' }],
+    ['Limpar fogão e micro-ondas', { type: 'weekly' }],
+    ['Fazer a lista de compras', { type: 'weekly' }],
+    ['Trocar a roupa de cama', { type: 'interval', every: 14 }],
+    ['Limpar a geladeira', { type: 'monthly' }],
+    ['Limpar janelas e vidros', { type: 'monthly' }],
+    ['Limpar os ralos', { type: 'monthly' }],
+    ['Lavar cortinas e tapetes', { type: 'interval', every: 90 }],
+    ['Organizar os armários', { type: 'interval', every: 90 }],
+  ],
+  cuidados: [
+    ['Protetor solar', { type: 'daily' }],
+    ['Hidratar o corpo', { type: 'daily' }],
+    ['Esfoliar a pele', { type: 'weekly' }],
+    ['Máscara facial', { type: 'weekly' }],
+    ['Fazer as unhas', { type: 'weekly' }],
+    ['Lavar os pincéis de maquiagem', { type: 'interval', every: 14 }],
+    ['Trocar a escova de dentes', { type: 'interval', every: 90 }],
+  ],
 };
 const FINANCE_TABS = { lancamentos: 'Lançamentos', compromissos: 'Compromissos', orcamento: 'Orçamento', metas: 'Metas' };
 
@@ -97,12 +130,13 @@ const newItem = (areaId, name, freq, log = {}) => ({
 });
 
 const defaultState = () => ({
-  version: 2,
+  version: 3,
   areas: DEFAULT_AREAS.map(a => ({ ...a })),
   // items: rotinas recorrentes de qualquer card (casa, cuidados, inglês…).
   items: [
     newItem('cuidados', 'Hidratar o cabelo', { type: 'weekly' }),
-    newItem('cuidados', 'Limpar a sobrancelha', { type: 'interval', every: 15 }),
+    newItem('cuidados', 'Limpar a sobrancelha', { type: 'weekly' }),
+    newItem('ingles', 'Praticar inglês (20 min)', { type: 'times', per: 4 }),
   ],
   notes: [],
   tasks: [], // card "Adiados"
@@ -113,6 +147,7 @@ const defaultState = () => ({
 });
 
 const DATA_KEYS = ['areas', 'items', 'notes', 'tasks', 'transactions', 'bills', 'goals', 'habits'];
+const areaExists = (st, id) => st.areas.some(a => a.id === id);
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 
 function normalize(data) {
@@ -134,6 +169,19 @@ function normalize(data) {
       s.items.push({ id: h.id, areaId: 'habitos', name: h.name, freq, log: h.log || {}, createdAt: h.createdAt });
     }
   }
+
+  if ((data.version || 1) === 2) {
+    // v3: sobrancelha passa a ser semanal e o inglês ganha a meta de prática semanal.
+    for (const it of s.items) {
+      if (it.areaId === 'cuidados' && it.name === 'Limpar a sobrancelha' && it.freq.type === 'interval' && it.freq.every === 15) {
+        it.freq = { type: 'weekly' };
+      }
+    }
+    if (areaExists(s, 'ingles') && !s.items.some(i => i.areaId === 'ingles')) {
+      s.items.push(newItem('ingles', 'Praticar inglês (20 min)', { type: 'times', per: 4 }));
+    }
+  }
+  s.version = 3;
   return s;
 }
 
@@ -166,6 +214,7 @@ const ui = {
 function freqLabel(f) {
   if (f.type === 'weekdays') return f.days.length === 7 ? 'Todo dia' : f.days.map(d => WEEKDAYS[d]).join(', ');
   if (f.type === 'interval') return `A cada ${f.every} dias`;
+  if (f.type === 'times') return `${f.per}x por semana`;
   return FREQ_TYPES[f.type];
 }
 
@@ -206,6 +255,20 @@ function itemStatus(item, today) {
       late: overdue > 0,
       label: overdue === 0 ? 'Hoje' : `Atrasado ${plural(overdue, 'dia', 'dias')}`,
     };
+  }
+
+  if (f.type === 'times') {
+    // Meta de N vezes na semana (segunda a domingo), em qualquer dia. O check vale para hoje.
+    const start = weekStart(today);
+    const count = Object.keys(item.log).filter(d => item.log[d] && d >= start && d <= today).length;
+    const left = daysBetween(today, addDays(start, 6)) + 1; // inclui hoje
+    const need = f.per - count;
+    if (need <= 0) {
+      return { done: doneToday, doneToday, show: false, resting: !doneToday, count, label: `✓ Meta da semana (${count}/${f.per})` };
+    }
+    let label = `${count}/${f.per} na semana`;
+    if (!doneToday && need >= left) label += ` · faltam ${need} em ${plural(left, 'dia', 'dias')}`;
+    return { done: doneToday, doneToday, show: !doneToday, count, label };
   }
 
   if (f.type === 'weekdays' && !f.days.includes(parseISODate(today).getDay())) {
@@ -319,6 +382,15 @@ const checkButton = (action, id, pressed, label) => `
 
 const areaById = id => state.areas.find(a => a.id === id);
 
+function weekDots(item, today) {
+  const start = weekStart(today);
+  return `<div class="dots" aria-hidden="true">${Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(start, i);
+    const wd = WEEKDAYS[parseISODate(d).getDay()];
+    return `<span class="dot ${item.log[d] ? 'on' : ''} ${d > today ? 'off' : ''}" title="${wd} ${fmtShortDate(d)}">${wd[0]}</span>`;
+  }).join('')}</div>`;
+}
+
 function itemRow(item, st, { showArea = false } = {}) {
   const area = showArea && areaById(item.areaId);
   const tag = area
@@ -330,6 +402,7 @@ function itemRow(item, st, { showArea = false } = {}) {
       <div class="body">
         <div class="title">${esc(item.name)}</div>
         <div class="meta">${tag}<span class="${st.late ? 'neg' : ''}">${st.label}</span></div>
+        ${!showArea && item.freq.type === 'times' ? weekDots(item, todayISO()) : ''}
       </div>
       ${showArea ? '' : `<button class="icon-btn" data-action="delete-item" data-id="${item.id}" aria-label="Excluir ${esc(item.name)}">✕</button>`}
     </li>`;
@@ -403,10 +476,33 @@ function areaCard(area, today) {
     if (late) lines.push(`<span class="neg">${plural(late, 'atrasado', 'atrasados')}</span>`);
     if (forToday) lines.push(`${forToday} para hoje`);
     if (period) lines.push(`${period} no prazo da semana/mês`);
+    items.forEach((it, i) => {
+      if (it.freq.type === 'times') lines.push(`Semana: ${sts[i].count}/${it.freq.per}${sts[i].count >= it.freq.per ? ' ✓' : ''}`);
+    });
     if (!lines.length) lines.push('<span class="pos">✓ Em dia</span>');
     lines.push(`<span class="muted">${plural(doneMonth, 'feito', 'feitos')} no mês</span>`);
   }
   return cardLink(`#area/${encodeURIComponent(area.id)}`, area.emoji, area.name, lines);
+}
+
+function suggestionsBlock(areaId, itemCount) {
+  const existing = new Set(state.items.filter(i => i.areaId === areaId).map(i => i.name.toLowerCase()));
+  const options = (SUGGESTIONS[areaId] || [])
+    .map(([name, freq], index) => ({ name, freq, index }))
+    .filter(o => !existing.has(o.name.toLowerCase()));
+  if (!options.length) return '';
+  return `
+    <details class="card add" ${itemCount < 3 ? 'open' : ''}>
+      <summary>💡 Sugestões (${options.length})</summary>
+      <p class="muted" style="margin:0 0 8px">Comece com 5 ou 6 — dá para adicionar mais depois. A frequência pode ser ajustada recriando o item.</p>
+      <ul class="list">${options.map(o => `
+        <li class="item">
+          <div class="body"><div class="title">${esc(o.name)}</div><div class="meta">${esc(freqLabel(o.freq))}</div></div>
+          <button class="btn secondary small" data-action="add-suggestion" data-area="${esc(areaId)}" data-index="${o.index}"
+            aria-label="Adicionar ${esc(o.name)}">+ Adicionar</button>
+        </li>`).join('')}
+      </ul>
+    </details>`;
 }
 
 const views = {
@@ -504,13 +600,16 @@ const views = {
             <select name="freq" aria-label="Frequência" style="flex:1 1 160px">
               ${Object.entries(FREQ_TYPES).map(([k, l]) => `<option value="${k}" ${k === defFreq ? 'selected' : ''}>${l}</option>`).join('')}
             </select>
-            <label class="only-interval muted">a cada <input type="number" name="every" min="1" max="365" value="15" aria-label="Número de dias"> dias</label>
+            <label class="only-interval muted">a cada <input type="number" name="every" min="1" max="365" value="7" aria-label="Número de dias"> dias</label>
+            <label class="only-times muted"><input type="number" name="per" min="1" max="7" value="4" aria-label="Vezes por semana"> vezes</label>
           </div>
           <div class="only-weekdays">${weekdayPicker()}</div>
           <label class="only-interval muted">Última vez que fez (opcional) <input type="date" name="last" max="${today}"></label>
           <button class="btn" type="submit">Adicionar</button>
         </form>
       </details>
+
+      ${suggestionsBlock(id, items.length)}
 
       <details class="notes" ${notes.length || hint.notes ? 'open' : ''}>
         <summary><h2>Anotações <span class="muted">(${notes.length})</span></h2></summary>
@@ -874,9 +973,16 @@ const actions = {
     const today = todayISO();
     if (it.log[today]) delete it.log[today];
     // Semanal/mensal já feito em outro dia do período: desmarcar desfaz esse registro.
-    else if (itemStatus(it, today).done) delete it.log[lastDone(it, today)];
+    else if (it.freq.type !== 'times' && itemStatus(it, today).done) delete it.log[lastDone(it, today)];
     else it.log[today] = true;
     commit();
+  },
+  'add-suggestion'({ area, index }) {
+    const sug = SUGGESTIONS[area]?.[Number(index)];
+    if (!sug) return;
+    state.items.push(newItem(area, sug[0], { ...sug[1] }));
+    commit();
+    toast(`"${sug[0]}" adicionado.`);
   },
   'delete-item'({ id }) {
     const it = byId(state.items, id);
@@ -991,6 +1097,10 @@ const forms = {
     if (type === 'weekdays') {
       freq.days = data.getAll('days').map(Number);
       if (!freq.days.length) return toast('Escolha pelo menos um dia da semana.');
+    }
+    if (type === 'times') {
+      freq.per = Math.round(Number(data.get('per')));
+      if (!(freq.per >= 1 && freq.per <= 7)) return toast('Informe de 1 a 7 vezes por semana.');
     }
     if (type === 'interval') {
       freq.every = Math.round(Number(data.get('every')));

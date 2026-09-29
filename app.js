@@ -1107,7 +1107,10 @@ function viewTitle(view, arg) {
   return { home: 'Meu Dia', adiados: '⏳ Adiados', financas: '💰 Finanças', mais: 'Configurações' }[view];
 }
 
+let renderedDay = null; // dia usado na última renderização
+
 function render() {
+  renderedDay = todayISO();
   const { view, arg } = parseRoute();
   titleEl.textContent = viewTitle(view, arg);
   document.getElementById('back').hidden = view === 'home';
@@ -1469,6 +1472,20 @@ window.addEventListener('hashchange', () => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) render();
 });
+
+// App aberto na tela durante a virada do dia: atualiza as contagens sozinho.
+// Não redesenha se houver algo sendo digitado ou editado, para não perder o texto.
+const isTyping = () => {
+  const el = document.activeElement;
+  const typing = el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+  const filled = [...viewEl.querySelectorAll('input[type="text"], textarea')].some(i => i.value.trim() && !i.defaultValue);
+  return typing || filled || ui.editing;
+};
+setInterval(() => {
+  if (document.hidden || todayISO() === renderedDay || isTyping()) return;
+  if (ui.financeMonth === monthKey(renderedDay)) ui.financeMonth = monthKey(todayISO()); // virada de mês
+  render();
+}, 60 * 1000);
 
 save(); // grava a migração da v1, se houve
 render();

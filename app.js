@@ -207,7 +207,10 @@ function save() {
 const ui = {
   financeMonth: monthKey(todayISO()),
   txType: 'out',
+  editing: null, // { kind: 'item' | 'task' | 'bill', id } em edição na tela
 };
+
+const isEditing = (kind, id) => ui.editing?.kind === kind && ui.editing.id === id;
 
 /* ---------- rotinas recorrentes ---------- */
 
@@ -392,6 +395,7 @@ function weekDots(item, today) {
 }
 
 function itemRow(item, st, { showArea = false } = {}) {
+  if (!showArea && isEditing('item', item.id)) return itemEditRow(item);
   const area = showArea && areaById(item.areaId);
   const tag = area
     ? `<span class="badge">${esc(area.emoji)} ${esc(area.name)}</span>`
@@ -401,10 +405,10 @@ function itemRow(item, st, { showArea = false } = {}) {
       ${checkButton('toggle-item', item.id, st.done, item.name)}
       <div class="body">
         <div class="title">${esc(item.name)}</div>
-        <div class="meta">${tag}<span class="${st.late ? 'neg' : ''}">${st.label}</span></div>
+        <div class="meta">${tag}<span class="${st.late ? 'neg' : ''}">${st.label}</span>${!showArea && item.reminder ? `<span>⏰ ${esc(item.reminder.time)}</span>` : ''}</div>
         ${!showArea && item.freq.type === 'times' ? weekDots(item, todayISO()) : ''}
       </div>
-      ${showArea ? '' : `<button class="icon-btn" data-action="delete-item" data-id="${item.id}" aria-label="Excluir ${esc(item.name)}">✕</button>`}
+      ${showArea ? '' : `<button class="icon-btn" data-action="edit" data-kind="item" data-id="${item.id}" aria-label="Editar ${esc(item.name)}">✎</button>`}
     </li>`;
 }
 
@@ -416,6 +420,18 @@ function sortTasks(a, b) {
 }
 
 function taskRow(task, today, { compact = false } = {}) {
+  if (!compact && isEditing('task', task.id)) {
+    return `
+      <li class="item editing">
+        <form class="stack edit-form" data-form="task-edit">
+          <input type="hidden" name="id" value="${task.id}">
+          <input type="text" name="title" value="${esc(task.title)}" required maxlength="200" aria-label="Pendência">
+          <input type="text" name="step" value="${esc(task.step || '')}" placeholder="Menor próximo passo" maxlength="160" aria-label="Próximo passo">
+          <label class="muted inline-label">Prazo <input type="date" name="due" value="${task.due || ''}"></label>
+          ${editButtons('delete-task', task.id)}
+        </form>
+      </li>`;
+  }
   const late = !task.done && task.due && task.due < today;
   const age = daysBetween(localDate(task.createdAt), today);
   const meta = [];
@@ -433,7 +449,7 @@ function taskRow(task, today, { compact = false } = {}) {
       </div>
       ${compact || task.done ? '' : `<button class="icon-btn star" data-action="focus-task" data-id="${task.id}" aria-pressed="${!!task.focus}"
         aria-label="${task.focus ? 'Tirar do foco' : 'Focar esta semana'}">${task.focus ? '★' : '☆'}</button>`}
-      ${compact ? '' : `<button class="icon-btn" data-action="delete-task" data-id="${task.id}" aria-label="Excluir">✕</button>`}
+      ${compact ? '' : `<button class="icon-btn" data-action="edit" data-kind="task" data-id="${task.id}" aria-label="Editar">✎</button>`}
     </li>`;
 }
 
@@ -447,10 +463,70 @@ const monthNav = () => `
     <button class="btn secondary" data-action="month" data-value="1" aria-label="Próximo mês">›</button>
   </div>`;
 
-const weekdayPicker = (checked = []) => `
+const weekdayPicker = (checked = [], name = 'days') => `
   <div class="weekdays" role="group" aria-label="Dias da semana">
-    ${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="days" value="${i}" ${checked.includes(i) ? 'checked' : ''}><span>${d}</span></label>`).join('')}
+    ${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="${name}" value="${i}" ${checked.includes(i) ? 'checked' : ''}><span>${d}</span></label>`).join('')}
   </div>`;
+
+// Campos de frequência, usados ao criar e ao editar um item.
+const freqFields = (freq = {}) => `
+  <div class="inline">
+    <select name="freq" aria-label="Frequência" style="flex:1 1 160px">
+      ${Object.entries(FREQ_TYPES).map(([k, l]) => `<option value="${k}" ${k === freq.type ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+    <label class="only-interval muted">a cada <input type="number" name="every" min="1" max="365" value="${freq.every || 7}" aria-label="Número de dias"> dias</label>
+    <label class="only-times muted"><input type="number" name="per" min="1" max="7" value="${freq.per || 4}" aria-label="Vezes por semana"> vezes</label>
+  </div>
+  <div class="only-weekdays">${weekdayPicker(freq.type === 'weekdays' ? freq.days : [])}</div>`;
+
+function parseFreq(data) {
+  const type = data.get('freq');
+  if (!FREQ_TYPES[type]) return { error: 'Frequência inválida.' };
+  const freq = { type };
+  if (type === 'weekdays') {
+    freq.days = data.getAll('days').map(Number);
+    if (!freq.days.length) return { error: 'Escolha pelo menos um dia da semana.' };
+  }
+  if (type === 'times') {
+    freq.per = Math.round(Number(data.get('per')));
+    if (!(freq.per >= 1 && freq.per <= 7)) return { error: 'Informe de 1 a 7 vezes por semana.' };
+  }
+  if (type === 'interval') {
+    freq.every = Math.round(Number(data.get('every')));
+    if (!(freq.every >= 1 && freq.every <= 365)) return { error: 'Informe de 1 a 365 dias.' };
+  }
+  return { freq };
+}
+
+const editButtons = (deleteAction, id) => `
+  <div class="inline">
+    <button class="btn" type="submit" name="do" value="save">Salvar</button>
+    <button class="btn secondary" type="button" data-action="cancel-edit">Cancelar</button>
+    <button class="btn danger" type="button" data-action="${deleteAction}" data-id="${id}">Excluir</button>
+  </div>`;
+
+function itemEditRow(item) {
+  const r = item.reminder || {};
+  const rdays = r.days || (item.freq.type === 'times' ? [1, 2, 3, 4, 5] : [6]);
+  return `
+    <li class="item editing">
+      <form class="stack edit-form" data-form="item-edit" data-freq="${item.freq.type}">
+        <input type="hidden" name="id" value="${item.id}">
+        <input type="text" name="name" value="${esc(item.name)}" required maxlength="120" aria-label="Nome do item">
+        ${freqFields(item.freq)}
+        <fieldset class="reminder stack">
+          <legend>⏰ Lembrete no calendário do celular</legend>
+          <label class="muted inline-label">Horário <input type="time" name="time" value="${esc(r.time || '20:00')}" required></label>
+          <div class="only-rdays"><span class="muted">Lembrar nestes dias</span>${weekdayPicker(rdays, 'rdays')}</div>
+          <label class="only-monthly muted inline-label">Dia do mês <input type="number" name="monthDay" min="1" max="28" value="${r.monthDay || 1}"></label>
+          <button class="btn secondary" type="submit" name="do" value="calendar">📅 Adicionar ao calendário</button>
+          <p class="muted small">Cria um evento repetido com alarme no Calendário. Ele toca mesmo se você já tiver feito, e mudanças aqui não
+            atualizam o calendário — para mudar, apague o evento no Calendário e adicione de novo.</p>
+        </fieldset>
+        ${editButtons('delete-item', item.id)}
+      </form>
+    </li>`;
+}
 
 /* ---------- telas ---------- */
 
@@ -596,14 +672,7 @@ const views = {
         <form class="stack" data-form="item" data-freq="${defFreq}">
           <input type="hidden" name="areaId" value="${esc(id)}">
           <input type="text" name="name" placeholder="${esc(hint.placeholder || 'Nome do item')}" required maxlength="120" aria-label="Nome do item">
-          <div class="inline">
-            <select name="freq" aria-label="Frequência" style="flex:1 1 160px">
-              ${Object.entries(FREQ_TYPES).map(([k, l]) => `<option value="${k}" ${k === defFreq ? 'selected' : ''}>${l}</option>`).join('')}
-            </select>
-            <label class="only-interval muted">a cada <input type="number" name="every" min="1" max="365" value="7" aria-label="Número de dias"> dias</label>
-            <label class="only-times muted"><input type="number" name="per" min="1" max="7" value="4" aria-label="Vezes por semana"> vezes</label>
-          </div>
-          <div class="only-weekdays">${weekdayPicker()}</div>
+          ${freqFields({ type: defFreq })}
           <label class="only-interval muted">Última vez que fez (opcional) <input type="date" name="last" max="${today}"></label>
           <button class="btn" type="submit">Adicionar</button>
         </form>
@@ -795,16 +864,31 @@ const financeViews = {
         </section>` : ''}
 
       <h2>Contas do mês</h2>
-      ${list(rows.map(r => `
+      ${list(rows.map(r => isEditing('bill', r.bill.id) ? `
+        <li class="item editing">
+          <form class="stack edit-form" data-form="bill-edit">
+            <input type="hidden" name="id" value="${r.bill.id}">
+            <input type="text" name="name" value="${esc(r.bill.name)}" required maxlength="60" aria-label="Nome">
+            <div class="inline">
+              <input type="text" name="amount" inputmode="decimal" value="${moneyInput(r.bill.amount)}" required aria-label="Valor" style="flex:1 1 110px">
+              <label class="muted inline-label">Dia <input type="number" name="day" min="1" max="31" value="${r.bill.day}" required></label>
+              <select name="category" aria-label="Categoria" style="flex:1 1 140px">
+                ${CATEGORIES.out.map(c => `<option ${c === r.bill.category ? 'selected' : ''}>${c}</option>`).join('')}
+              </select>
+            </div>
+            <p class="muted small">O novo valor vale para os próximos pagamentos; os já feitos não mudam.</p>
+            ${editButtons('delete-bill', r.bill.id)}
+          </form>
+        </li>` : `
         <li class="item wrap ${r.payment ? 'done' : ''}">
           <div class="body">
             <div class="title">${r.payment ? '✓ ' : ''}${esc(r.bill.name)}</div>
             <div class="meta"><span>${billLabel(r)}</span><span class="badge">${esc(r.bill.category)}</span></div>
           </div>
+          <button class="icon-btn" data-action="edit" data-kind="bill" data-id="${r.bill.id}" aria-label="Editar compromisso">✎</button>
           ${r.payment
             ? `<button class="icon-btn" data-action="delete-tx" data-id="${r.payment.id}" aria-label="Desfazer pagamento" title="Desfazer pagamento">↺</button>`
-            : `<button class="icon-btn" data-action="delete-bill" data-id="${r.bill.id}" aria-label="Excluir compromisso">✕</button>
-               <form class="inline pay" data-form="bill-pay">
+            : `<form class="inline pay" data-form="bill-pay">
                  <input type="hidden" name="billId" value="${r.bill.id}">
                  <input type="hidden" name="month" value="${key}">
                  <input type="text" name="amount" inputmode="decimal" value="${moneyInput(r.bill.amount)}" required aria-label="Valor pago" style="flex:1 1 100px">
@@ -919,6 +1003,92 @@ const financeViews = {
   },
 };
 
+/* ---------- lembretes via calendário (.ics) ---------- */
+
+// Sem servidor não há notificação push; em vez disso, geramos um evento repetido
+// com alarme que o app Calendário do celular importa.
+const ICS_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+const icsText = s => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+const icsDateTime = (iso, time) => `${iso.replace(/-/g, '')}T${time.replace(':', '')}00`;
+
+// Primeiro dia a partir de hoje que cai num dos dias da semana.
+function firstMatchingDay(days, today) {
+  for (let i = 0; i < 7; i++) {
+    const d = addDays(today, i);
+    if (days.includes(parseISODate(d).getDay())) return d;
+  }
+  return today;
+}
+
+function reminderRule(item, today) {
+  const f = item.freq;
+  const r = item.reminder;
+  const byDay = days => `FREQ=WEEKLY;BYDAY=${[...days].sort().map(d => ICS_DAYS[d]).join(',')}`;
+  switch (f.type) {
+    case 'daily':
+      return { rule: 'FREQ=DAILY', start: today };
+    case 'weekdays':
+      return { rule: byDay(f.days), start: firstMatchingDay(f.days, today) };
+    case 'weekly':
+    case 'times':
+      return { rule: byDay(r.days), start: firstMatchingDay(r.days, today) };
+    case 'monthly': {
+      const thisMonth = `${monthKey(today)}-${pad(r.monthDay)}`;
+      const start = thisMonth >= today ? thisMonth : `${shiftMonth(monthKey(today), 1)}-${pad(r.monthDay)}`;
+      return { rule: `FREQ=MONTHLY;BYMONTHDAY=${r.monthDay}`, start };
+    }
+    default: { // interval: a partir do próximo vencimento
+      const last = lastDone(item, today);
+      const next = last ? addDays(last, f.every) : today;
+      return { rule: `FREQ=DAILY;INTERVAL=${f.every}`, start: next > today ? next : today };
+    }
+  }
+}
+
+function buildICS(item) {
+  const today = todayISO();
+  const { rule, start } = reminderRule(item, today);
+  const area = areaById(item.areaId);
+  const url = `${location.href.split('#')[0]}#area/${encodeURIComponent(item.areaId)}`;
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  return [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Meu Dia//PT-BR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${item.id}@meu-dia`,
+    `DTSTAMP:${stamp}`,
+    // Horário "flutuante" (sem fuso): o celular usa o fuso local.
+    `DTSTART:${icsDateTime(start, item.reminder.time)}`,
+    'DURATION:PT15M',
+    `RRULE:${rule}`,
+    `SUMMARY:${icsText(`${area ? `${area.emoji} ` : ''}${item.name}`)}`,
+    `DESCRIPTION:${icsText(`Marque no Meu Dia: ${url}`)}`,
+    `URL:${url}`,
+    'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText(item.name)}`, 'TRIGGER:PT0M', 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR', '',
+  ].join('\r\n');
+}
+
+const isIOS = () =>
+  /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function openCalendarFile(ics, name) {
+  if (isIOS()) {
+    // No iPhone, abrir o conteúdo text/calendar mostra a tela "Adicionar ao Calendário".
+    const url = `data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`;
+    if (!window.open(url, '_blank')) location.href = url;
+    return;
+  }
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  // Só ASCII: alguns navegadores descartam nomes de arquivo com acento.
+  const slug = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+  a.download = `${slug || 'lembrete'}.ics`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('Arquivo de lembrete baixado: abra-o para adicionar ao calendário.');
+}
+
 /* ---------- navegação e renderização ---------- */
 
 const viewEl = document.getElementById('view');
@@ -984,10 +1154,22 @@ const actions = {
     commit();
     toast(`"${sug[0]}" adicionado.`);
   },
+  edit({ kind, id }) {
+    ui.editing = { kind, id };
+    render();
+    const input = viewEl.querySelector('.editing input[type="text"]');
+    input?.focus();
+    input?.closest('.item')?.scrollIntoView({ block: 'nearest' });
+  },
+  'cancel-edit'() {
+    ui.editing = null;
+    render();
+  },
   'delete-item'({ id }) {
     const it = byId(state.items, id);
     if (!it || !confirm(`Excluir "${it.name}" e o histórico dele?`)) return;
     state.items = state.items.filter(x => x.id !== id);
+    ui.editing = null;
     commit();
   },
   'delete-note'({ id }) {
@@ -1014,7 +1196,10 @@ const actions = {
     commit();
   },
   'delete-task'({ id }) {
-    state.tasks = state.tasks.filter(t => t.id !== id);
+    const t = byId(state.tasks, id);
+    if (!t || !confirm(`Excluir "${t.title}"?`)) return;
+    state.tasks = state.tasks.filter(x => x.id !== id);
+    ui.editing = null;
     commit();
   },
   'delete-area'({ id }) {
@@ -1044,6 +1229,7 @@ const actions = {
     const b = byId(state.bills, id);
     if (!b || !confirm(`Excluir o compromisso "${b.name}"? Pagamentos já feitos continuam em Lançamentos.`)) return;
     state.bills = state.bills.filter(x => x.id !== id);
+    ui.editing = null;
     commit();
   },
   'delete-budget'({ value }) {
@@ -1091,26 +1277,60 @@ const forms = {
   },
   item(data) {
     const name = data.get('name').trim();
-    const type = data.get('freq');
-    if (!name || !FREQ_TYPES[type]) return;
-    const freq = { type };
-    if (type === 'weekdays') {
-      freq.days = data.getAll('days').map(Number);
-      if (!freq.days.length) return toast('Escolha pelo menos um dia da semana.');
-    }
-    if (type === 'times') {
-      freq.per = Math.round(Number(data.get('per')));
-      if (!(freq.per >= 1 && freq.per <= 7)) return toast('Informe de 1 a 7 vezes por semana.');
-    }
-    if (type === 'interval') {
-      freq.every = Math.round(Number(data.get('every')));
-      if (!(freq.every >= 1 && freq.every <= 365)) return toast('Informe de 1 a 365 dias.');
-    }
+    if (!name) return;
+    const { freq, error } = parseFreq(data);
+    if (error) return toast(error);
     const log = {};
-    const last = type === 'interval' && data.get('last');
+    const last = freq.type === 'interval' && data.get('last');
     if (last && last <= todayISO()) log[last] = true;
     state.items.push(newItem(data.get('areaId'), name, freq, log));
     commit();
+  },
+  'item-edit'(data, submitter) {
+    const it = byId(state.items, data.get('id'));
+    const name = data.get('name').trim();
+    if (!it || !name) return;
+    const { freq, error } = parseFreq(data);
+    if (error) return toast(error);
+    // O histórico (log) é mantido: mudar a frequência não apaga o que já foi feito.
+    it.name = name;
+    it.freq = freq;
+    const reminder = {
+      time: data.get('time') || '20:00',
+      days: data.getAll('rdays').map(Number),
+      monthDay: Math.min(28, Math.max(1, Math.round(Number(data.get('monthDay')) || 1))),
+    };
+    const toCalendar = submitter?.value === 'calendar';
+    if (toCalendar && ['weekly', 'times'].includes(freq.type) && !reminder.days.length) {
+      return toast('Escolha em quais dias o lembrete deve tocar.');
+    }
+    if (toCalendar || it.reminder) it.reminder = reminder;
+    ui.editing = null;
+    commit();
+    if (toCalendar) openCalendarFile(buildICS(it), `lembrete-${it.name}`);
+    else toast('Salvo.');
+  },
+  'task-edit'(data) {
+    const t = byId(state.tasks, data.get('id'));
+    const title = data.get('title').trim();
+    if (!t || !title) return;
+    Object.assign(t, { title, step: data.get('step').trim(), due: data.get('due') || null });
+    ui.editing = null;
+    commit();
+    toast('Salvo.');
+  },
+  'bill-edit'(data) {
+    const b = byId(state.bills, data.get('id'));
+    const name = data.get('name').trim();
+    const amount = parseMoney(data.get('amount'));
+    const day = Math.round(Number(data.get('day')));
+    if (!b || !name) return;
+    if (amount === null) return toast('Valor inválido. Ex.: 120,00');
+    if (!(day >= 1 && day <= 31)) return toast('Dia do vencimento deve ser de 1 a 31.');
+    Object.assign(b, { name, amount, day, category: data.get('category') });
+    ui.editing = null;
+    commit();
+    toast('Salvo.');
   },
   note(data) {
     const text = data.get('text').trim();
@@ -1240,6 +1460,7 @@ viewEl.addEventListener('change', async e => {
 });
 
 window.addEventListener('hashchange', () => {
+  ui.editing = null;
   render();
   window.scrollTo(0, 0);
 });

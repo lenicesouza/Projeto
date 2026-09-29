@@ -28,7 +28,15 @@ A tela inicial tem **"Para hoje"** (o que vence hoje em todos os cards) e os **c
 | 💰 **Finanças** | Lançamentos, **compromissos** (contas fixas do mês, com vencimento e pagamento), orçamento por categoria e metas. |
 | ⚙️ **Configurações** | Criar/excluir cards de rotina (ex.: Academia, Plantas), backup e apagar dados. |
 
-Todo card de rotina também tem anotações.
+Todo card de rotina também tem anotações. Itens, pendências e compromissos podem ser **editados** pelo ✎ (o histórico é mantido); o "Excluir" fica dentro da edição.
+
+## Lembretes
+
+Não há notificação push (exigiria um servidor e os dados sairiam do aparelho). Em vez disso, na edição de um item (✎) há **⏰ Lembrete no calendário**: escolha horário e dias e toque em **📅 Adicionar ao calendário**. O app gera um evento repetido com alarme para o Calendário do celular.
+
+- O alarme toca **mesmo que o item já esteja marcado** — o calendário não sabe o que foi feito no app.
+- Mudanças no app **não atualizam** o calendário: apague o evento no Calendário e adicione de novo.
+- "A cada N dias" vira um evento a cada N dias a partir do próximo vencimento, em datas fixas.
 
 ## Como as frequências funcionam
 
@@ -60,14 +68,14 @@ Não há sincronização. Use o **celular como aparelho principal**. Para ver os
 - **Versões antigas:** os hábitos da primeira versão viram automaticamente o card 🔁 Hábitos, com o histórico.
 - **Os dados ficam só no navegador** (`localStorage`). Trocar de aparelho, limpar o navegador ou usar aba anônima = perder dados. Por isso existe o backup — use-o.
 - **Sem sincronização** entre celular e computador.
-- **Sem notificações/lembretes.** Navegadores limitam notificações de apps web sem servidor, especialmente no iPhone.
+- **Lembretes só via Calendário** (ver acima), sem notificação do próprio app.
 - **Finanças manuais**: não há integração com banco. Lançar à mão é o principal ponto de abandono desse tipo de app.
 
 ## Próximos passos sugeridos (em ordem)
 
 1. Usar por 2–3 semanas e anotar o que realmente faz falta.
 2. Sincronização em nuvem com login (ex.: Supabase/Firebase) — só quando o uso justificar.
-3. Lembretes/notificações (exige servidor ou app nativo).
+3. Notificações do próprio app, cientes do que já foi feito (exige servidor ou app nativo).
 
 ## Estrutura
 

@@ -377,3 +377,21 @@ form[data-freq="weekdays"] .only-weekdays { display: block !important; }
 form[data-freq="interval"] .only-interval { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .emoji-sm { font-size: 1.4rem; width: 32px; text-align: center; }
+
+/* ---------- edição e lembretes ---------- */
+.item.editing { display: block; border-color: var(--primary); }
+.edit-form { width: 100%; }
+.inline-label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+input[type="time"] {
+  min-height: 44px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.reminder { border: 1px dashed var(--border); border-radius: 12px; padding: 10px 12px 12px; margin: 0; }
+.reminder legend { padding: 0 6px; font-weight: 600; font-size: 0.92rem; }
+.small { font-size: 0.8rem; margin: 0; }
+.only-rdays, .only-monthly { display: none !important; }
+form[data-freq="weekly"] .only-rdays, form[data-freq="times"] .only-rdays { display: block !important; }
+form[data-freq="monthly"] .only-monthly { display: flex !important; }

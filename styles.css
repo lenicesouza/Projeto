@@ -371,7 +371,10 @@ details.notes > summary h2 { display: inline-block; }
 details.notes > summary h2::before { content: "▸ "; color: var(--muted); }
 details.notes[open] > summary h2::before { content: "▾ "; }
 
-.only-weekdays, .only-interval, .only-times { display: none !important; }
+.only-weekdays, .only-interval, .only-times, .only-rolling { display: none !important; }
+form[data-freq="weekly"] .only-rolling, form[data-freq="monthly"] .only-rolling, form[data-freq="interval"] .only-rolling {
+  display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap;
+}
 form[data-freq="times"] .only-times { display: flex !important; align-items: center; gap: 6px; }
 form[data-freq="weekdays"] .only-weekdays { display: block !important; }
 form[data-freq="interval"] .only-interval { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -393,8 +396,7 @@ input[type="time"] {
 .reminder legend { padding: 0 6px; font-weight: 600; font-size: 0.92rem; }
 .small { font-size: 0.8rem; margin: 0; }
 .only-rdays, .only-monthly { display: none !important; }
-form[data-freq="weekly"] .only-rdays, form[data-freq="times"] .only-rdays { display: block !important; }
-form[data-freq="monthly"] .only-monthly { display: flex !important; }
+form[data-freq="times"] .only-rdays { display: block !important; }
 
 /* ---------- agenda ---------- */
 .cal-head { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; }

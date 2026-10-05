@@ -19,10 +19,10 @@ Para usar no celular, publique a pasta em qualquer hospedagem estática (GitHub 
 
 A tela inicial é uma **agenda**: uma faixa de dias que dá para rolar (ou deslizar o dedo sobre a lista para trocar de dia, ‹ › para pular semanas, 📅 para ir a uma data) e, abaixo, a **lista de tarefas do dia** escolhido. Embaixo ficam os **cards**, onde você cadastra as rotinas e a recorrência de cada uma.
 
-- **Lista do dia:** itens com dia definido (todo dia, dias da semana, a cada N dias), contas que vencem no dia e pendências com prazo. Hoje também mostra atrasados e pendências em foco.
-- **"Nesta semana" / "Neste mês":** itens sem dia fixo (1x por semana, X vezes por semana, 1x por mês), com o status do período. Dá para marcar em qualquer dia.
-- **Dias passados:** mostram o que foi feito e permitem marcar o que você esqueceu.
-- **Dias futuros:** previsão (sem marcar). "A cada N dias" é previsto a partir da última vez; se atrasar, as datas se ajustam.
+- **Lista do dia:** rotinas que vencem no dia, contas que vencem no dia e pendências com prazo. Hoje também mostra o que está atrasado e as pendências em foco.
+- **Metas da semana:** itens "X vezes por semana" (ex.: inglês 4x), com a contagem da semana. Dá para marcar em qualquer dia.
+- **Dias passados:** mostram o que foi feito e permitem marcar o que você esqueceu — a próxima data é recalculada a partir dali.
+- **Dias futuros:** previsão (sem marcar), supondo que o que está pendente hoje seja feito hoje.
 - **Bolinha em cada dia:** verde = tudo feito; laranja = pendente; cinza = dia passado com algo não feito.
 
 | Card | Função |
@@ -42,20 +42,23 @@ Não há notificação push (exigiria um servidor e os dados sairiam do aparelho
 
 - O alarme toca **mesmo que o item já esteja marcado** — o calendário não sabe o que foi feito no app.
 - Mudanças no app **não atualizam** o calendário: apague o evento no Calendário e adicione de novo.
-- "A cada N dias" vira um evento a cada N dias a partir do próximo vencimento, em datas fixas.
+- O evento parte da próxima data prevista e segue em datas fixas: se você atrasar, o app recalcula, mas o Calendário não.
 
 ## Como as frequências funcionam
 
-| Frequência | Quando está "feito" | Onde aparece na agenda |
-| --- | --- | --- |
-| Todo dia | Marcado no dia | Lista de todos os dias |
-| Dias da semana | Marcado no dia programado | Lista dos dias escolhidos |
-| 1x por semana | Marcado em qualquer dia de segunda a domingo | "Nesta semana" |
-| X vezes por semana | Cada dia marcado conta; meta batida ao chegar em X (ex.: 4/4) | "Nesta semana" |
-| 1x por mês | Marcado em qualquer dia do mês | "Neste mês" |
-| A cada N dias | Conta a partir da última vez | Lista do dia previsto (ou de hoje, se atrasado) |
+**1x por semana, 1x por mês e a cada N dias contam a partir da última vez que você fez.** Ex.: hidratou o cabelo em 04/10 com recorrência semanal → a próxima é 11/10. Se não fizer no dia, o item **acumula**: aparece no dia seguinte como "atrasado" até ser marcado, e a contagem recomeça do dia em que for feito.
 
-Itens sem dia fixo ficam numa seção separada **de propósito**: se aparecessem em todos os dias da semana, a agenda pareceria uma lista permanente de pendências. "A cada N dias" sem nenhum registro não tem como ser previsto: aparece em "Sem registro ainda" no dia de hoje até a primeira marcação.
+| Frequência | Próxima data | Se não fizer no dia |
+| --- | --- | --- |
+| Todo dia | Todos os dias | Não acumula (a louça de ontem não vira duas hoje) |
+| Dias da semana | Nos dias escolhidos | Não acumula (é um compromisso marcado) |
+| 1x por semana | 7 dias após a última vez | Acumula para o dia seguinte |
+| 1x por mês | Mesmo dia do mês seguinte (31/01 → 28/02) | Acumula para o dia seguinte |
+| A cada N dias | N dias após a última vez | Acumula para o dia seguinte |
+| X vezes por semana | Meta da semana (seg–dom), em qualquer dia | A contagem zera na segunda |
+
+- Item **nunca marcado** aparece hoje como "Primeira vez". Ao criar, informe **"Última vez que fez"** para a agenda já começar na data certa — ou volte na agenda até o dia em que fez e marque lá.
+- Como a contagem recomeça de quando você fez, atrasos frequentes fazem "toda semana" virar, na prática, a cada 8–9 dias.
 
 ## Compromissos (contas fixas)
 

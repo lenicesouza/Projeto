@@ -237,27 +237,54 @@ function nextWeekday(days, today) {
 }
 
 /*
+  Recorrência "rolante" (1x por semana, 1x por mês, a cada N dias): a próxima data é
+  contada a partir da última vez que foi feito. Se passar do dia sem fazer, o item
+  continua pendente (acumula) até ser feito.
+*/
+const ROLLING = new Set(['weekly', 'monthly', 'interval']);
+const itemStart = item => (item.createdAt ? localDate(item.createdAt) : todayISO());
+
+function addMonths(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const target = new Date(y, m - 1 + n, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(d, lastDay)); // 31/01 + 1 mês = 28 ou 29/02
+  return toISODate(target);
+}
+
+const nextAfter = (item, done) =>
+  item.freq.type === 'monthly' ? addMonths(done, 1) : addDays(done, item.freq.type === 'weekly' ? 7 : item.freq.every);
+
+// Quando o item vence, considerando o que foi feito até `upTo` (inclusive). Nunca feito: desde a criação.
+function dueDate(item, upTo) {
+  const last = lastDone(item, upTo);
+  return last ? nextAfter(item, last) : itemStart(item);
+}
+
+/*
   Situação de um item hoje.
-  - done: já cumprido no período atual (dia, semana ou mês; para "a cada N dias", feito hoje).
-  - show: aparece em "Para hoje". Semanais/mensais só entram nos 2 últimos dias do período,
-    para a tela inicial não virar uma lista permanente de pendências.
-  - late: atrasado (só para "a cada N dias").
+  - done: feito hoje (ou, para "X vezes por semana", conforme a meta).
+  - show: aparece na lista de hoje (vence hoje, está atrasado ou é diário).
+  - late: venceu em dia anterior e ainda não foi feito.
 */
 function itemStatus(item, today) {
   const f = item.freq;
   const last = lastDone(item, today);
   const doneToday = last === today;
 
-  if (f.type === 'interval') {
-    if (doneToday) return { done: true, doneToday, show: false, label: `Feito hoje · próxima em ${f.every} dias` };
-    if (!last) return { done: false, show: false, label: 'Sem registro · marque quando fizer' };
-    const overdue = daysBetween(addDays(last, f.every), today);
-    if (overdue < 0) return { done: false, show: false, resting: true, label: `Próxima em ${plural(-overdue, 'dia', 'dias')}` };
+  if (ROLLING.has(f.type)) {
+    if (doneToday) return { done: true, doneToday, show: false, label: `Feito hoje · próxima ${fmtShortDate(nextAfter(item, today))}` };
+    if (!last) return { done: false, show: true, label: 'Primeira vez · marque quando fizer' };
+    const due = nextAfter(item, last);
+    const overdue = daysBetween(due, today);
+    if (overdue < 0) {
+      return { done: false, show: false, resting: true, label: `Próxima: ${fmtShortDate(due)} · em ${plural(-overdue, 'dia', 'dias')}` };
+    }
     return {
       done: false,
       show: true,
       late: overdue > 0,
-      label: overdue === 0 ? 'Hoje' : `Atrasado ${plural(overdue, 'dia', 'dias')}`,
+      label: overdue === 0 ? 'Hoje' : `Atrasado ${plural(overdue, 'dia', 'dias')} (era ${fmtShortDate(due)})`,
     };
   }
 
@@ -277,18 +304,6 @@ function itemStatus(item, today) {
 
   if (f.type === 'weekdays' && !f.days.includes(parseISODate(today).getDay())) {
     return { done: false, show: false, resting: true, label: `Próxima: ${nextWeekday(f.days, today)}` };
-  }
-
-  if (f.type === 'weekly' || f.type === 'monthly') {
-    const start = f.type === 'weekly' ? weekStart(today) : `${monthKey(today)}-01`;
-    const end = f.type === 'weekly' ? addDays(start, 6) : monthEnd(monthKey(today));
-    const done = !!last && last >= start;
-    const left = daysBetween(today, end);
-    let label;
-    if (done) label = `Feito ${doneToday ? 'hoje' : fmtShortDate(last)}`;
-    else if (left === 0) label = 'Último dia';
-    else label = `Até ${f.type === 'weekly' ? 'domingo' : fmtShortDate(end)} · ${plural(left, 'dia', 'dias')}`;
-    return { done, doneToday, show: !done && left <= 1, label };
   }
 
   // Diário ou dia da semana programado para hoje.
@@ -508,7 +523,7 @@ const editButtons = (deleteAction, id) => `
 
 function itemEditRow(item) {
   const r = item.reminder || {};
-  const rdays = r.days || (item.freq.type === 'times' ? [1, 2, 3, 4, 5] : [6]);
+  const rdays = r.days || [1, 2, 3, 4, 5];
   return `
     <li class="item editing">
       <form class="stack edit-form" data-form="item-edit" data-freq="${item.freq.type}">
@@ -519,10 +534,9 @@ function itemEditRow(item) {
           <legend>⏰ Lembrete no calendário do celular</legend>
           <label class="muted inline-label">Horário <input type="time" name="time" value="${esc(r.time || '20:00')}" required></label>
           <div class="only-rdays"><span class="muted">Lembrar nestes dias</span>${weekdayPicker(rdays, 'rdays')}</div>
-          <label class="only-monthly muted inline-label">Dia do mês <input type="number" name="monthDay" min="1" max="28" value="${r.monthDay || 1}"></label>
           <button class="btn secondary" type="submit" name="do" value="calendar">📅 Adicionar ao calendário</button>
-          <p class="muted small">Cria um evento repetido com alarme no Calendário. Ele toca mesmo se você já tiver feito, e mudanças aqui não
-            atualizam o calendário — para mudar, apague o evento no Calendário e adicione de novo.</p>
+          <p class="muted small">Cria um evento repetido com alarme no Calendário, a partir da próxima data prevista. Ele toca mesmo se
+            você já tiver feito, e não acompanha atrasos: se a data mudar aqui, apague o evento no Calendário e adicione de novo.</p>
         </fieldset>
         ${editButtons('delete-item', item.id)}
       </form>
@@ -534,8 +548,6 @@ function itemEditRow(item) {
 /* ---------- agenda: calendário da tela inicial ---------- */
 
 const STRIP_RANGE = 45; // dias antes e depois do dia selecionado na faixa rolável
-const PERIODIC = new Set(['weekly', 'times', 'monthly']);
-const itemStart = item => (item.createdAt ? localDate(item.createdAt) : '0000-00-00');
 const liveItems = () => state.items.filter(it => areaById(it.areaId));
 
 function periodBounds(type, date) {
@@ -545,25 +557,25 @@ function periodBounds(type, date) {
 }
 
 /*
-  O item tem uma ocorrência com data definida neste dia?
-  - Diário e dias da semana: pelos dias programados (a partir da criação do item).
-  - A cada N dias: no passado, só onde foi feito; do hoje em diante, previsão a partir
-    da última vez (se estiver atrasado, a previsão recomeça hoje).
-  - Semanal, X por semana e mensal não têm dia: vão para as seções "semana" e "mês".
+  O item aparece na lista deste dia?
+  - Diário e dias da semana: nos dias programados (a partir da criação do item), sem acumular.
+  - Recorrência rolante: até hoje, em todo dia entre o vencimento e o dia em que foi feito
+    (o pendente acumula para o dia seguinte); no futuro, previsão supondo que o que está
+    pendente seja feito hoje.
+  - "X vezes por semana" é meta da semana: fica na seção "Nesta semana".
 */
 function occursOn(item, date, today) {
   const f = item.freq;
-  if (PERIODIC.has(f.type)) return false;
+  if (f.type === 'times') return false;
   if (item.log[date]) return true;
-  if (f.type === 'interval') {
-    if (date < today) return false;
-    const last = lastDone(item, today);
-    if (!last) return false;
-    const due = addDays(last, f.every);
-    const base = due > today ? due : today;
-    return date >= base && daysBetween(base, date) % f.every === 0;
-  }
   if (date < itemStart(item)) return false;
+  if (ROLLING.has(f.type)) {
+    if (date <= today) return dueDate(item, addDays(date, -1)) <= date;
+    const due = dueDate(item, today);
+    let next = due > today ? due : nextAfter(item, today);
+    for (let i = 0; next < date && i < 400; i++) next = nextAfter(item, next);
+    return next === date;
+  }
   if (f.type === 'weekdays') return f.days.includes(parseISODate(date).getDay());
   return true; // diário
 }
@@ -628,39 +640,27 @@ function dayItemRow(item, date, today) {
     late = !!st.late;
     if (late) rank = 0;
   } else if (date < today) {
-    label = done ? 'Feito' : '<span class="muted">Não feito</span>';
+    const due = ROLLING.has(item.freq.type) && !done ? dueDate(item, addDays(date, -1)) : null;
+    label = done ? 'Feito' : due && due < date
+      ? `<span class="muted">Acumulado · vencia ${fmtShortDate(due)}</span>`
+      : '<span class="muted">Não feito</span>';
   } else {
-    label = item.freq.type === 'interval' ? `Previsto · ${freqLabel(item.freq).toLowerCase()}` : esc(freqLabel(item.freq));
+    label = ROLLING.has(item.freq.type) ? `Previsto · ${esc(freqLabel(item.freq).toLowerCase())}` : esc(freqLabel(item.freq));
   }
   const html = dayCheckRow({ id: item.id, date, name: item.name, done, future: date > today, area: areaById(item.areaId), label, late });
   return { rank, html };
 }
 
-// Itens sem dia fixo: status no período (semana ou mês) do dia selecionado.
-function periodRows(date, today, types) {
-  const [start, end] = periodBounds(types[0], date);
-  const isWeek = types[0] !== 'monthly';
+// Metas "X vezes por semana": contagem da semana do dia selecionado; o check é deste dia.
+function weekGoalRows(date, today) {
+  const [start, end] = periodBounds('weekly', date);
   return liveItems()
-    .filter(it => types.includes(it.freq.type) && itemStart(it) <= end)
+    .filter(it => it.freq.type === 'times' && itemStart(it) <= end)
     .map(it => {
-      const days = Object.keys(it.log).filter(d => it.log[d] && d >= start && d <= end).sort();
-      const goal = it.freq.type === 'times' ? it.freq.per : 1;
-      const met = days.length >= goal;
-      let label;
-      if (it.freq.type === 'times') {
-        label = `${days.length}/${goal} na semana${met ? ' ✓' : ''}`;
-      } else if (met) {
-        label = `Feito ${WEEKDAYS[parseISODate(days[0]).getDay()].toLowerCase()}, ${fmtShortDate(days[0])}`;
-      } else if (end < today) {
-        label = `<span class="muted">Não feito ${isWeek ? 'nessa semana' : 'nesse mês'}</span>`;
-      } else if (start > today) {
-        label = esc(freqLabel(it.freq));
-      } else {
-        const left = daysBetween(today, end);
-        label = left === 0 ? 'Último dia' : `Até ${isWeek ? 'domingo' : fmtShortDate(end)} · ${plural(left, 'dia', 'dias')}`;
-      }
-      // "X por semana": o check é deste dia. Semanal/mensal: feito no período.
-      const done = it.freq.type === 'times' ? !!it.log[date] : met;
+      const count = Object.keys(it.log).filter(d => it.log[d] && d >= start && d <= end).length;
+      const met = count >= it.freq.per;
+      const label = `${count}/${it.freq.per} na semana${met ? ' ✓' : ''}`;
+      const done = !!it.log[date];
       return {
         rank: met ? 3 : 1,
         html: dayCheckRow({ id: it.id, date, name: it.name, done, future: date > today, area: areaById(it.areaId), label }),
@@ -731,17 +731,9 @@ function dayPanel(date, today) {
   const rows = [...billRows, ...itemRows, ...taskRows].sort((a, b) => a.rank - b.rank).map(r => r.html);
   const pending = [...billRows, ...itemRows, ...taskRows].filter(r => r.rank < 3).length;
 
-  const weekRows = periodRows(date, today, ['weekly', 'times']);
-  const monthRows = periodRows(date, today, ['monthly']);
+  const weekRows = weekGoalRows(date, today);
   const [ws, we] = periodBounds('weekly', date);
-  const weekTitle = ws <= today && today <= we ? 'Nesta semana' : `Semana de ${fmtShortDate(ws)} a ${fmtShortDate(we)}`;
-  const monthTitle = monthKey(date) === key ? 'Neste mês' : fmtMonth(monthKey(date));
-
-  // "A cada N dias" sem nenhum registro: não há como prever; aparece só hoje, à parte.
-  const noRecord = isToday
-    ? liveItems().filter(it => it.freq.type === 'interval' && !lastDone(it, today))
-      .map(it => dayCheckRow({ id: it.id, date, name: it.name, done: false, area: areaById(it.areaId), label: `${esc(freqLabel(it.freq))} · marque na próxima vez que fizer` }))
-    : [];
+  const weekTitle = ws <= today && today <= we ? 'Metas da semana' : `Metas · semana de ${fmtShortDate(ws)} a ${fmtShortDate(we)}`;
   const warnings = isToday ? budgetLines(key).filter(l => l.level !== 'ok') : [];
 
   const rel = isToday ? 'Hoje' : date === addDays(today, -1) ? 'Ontem' : date === addDays(today, 1) ? 'Amanhã' : '';
@@ -757,8 +749,6 @@ function dayPanel(date, today) {
         </div>` : ''}
       ${list(rows, empty)}
       ${weekRows.length ? `<h3>${weekTitle} <span class="muted">· qualquer dia</span></h3>${list(weekRows, '')}` : ''}
-      ${monthRows.length ? `<h3>${monthTitle} <span class="muted">· qualquer dia</span></h3>${list(monthRows, '')}` : ''}
-      ${noRecord.length ? `<h3>Sem registro ainda</h3>${list(noRecord, '')}` : ''}
     </section>`;
 }
 
@@ -775,7 +765,6 @@ function areaCard(area, today) {
   const sts = items.map(i => itemStatus(i, today));
   const late = sts.filter(s => s.late).length;
   const forToday = sts.filter(s => s.show && !s.done && !s.late).length;
-  const period = items.filter((it, i) => ['weekly', 'monthly'].includes(it.freq.type) && !sts[i].done && !sts[i].show).length;
   const doneMonth = items.reduce((n, it) => n + doneInMonth(it, key), 0);
 
   const lines = [];
@@ -783,7 +772,6 @@ function areaCard(area, today) {
   else {
     if (late) lines.push(`<span class="neg">${plural(late, 'atrasado', 'atrasados')}</span>`);
     if (forToday) lines.push(`${forToday} para hoje`);
-    if (period) lines.push(`${period} no prazo da semana/mês`);
     items.forEach((it, i) => {
       if (it.freq.type === 'times') lines.push(`Semana: ${sts[i].count}/${it.freq.per}${sts[i].count >= it.freq.per ? ' ✓' : ''}`);
     });
@@ -879,7 +867,7 @@ const views = {
           <input type="hidden" name="areaId" value="${esc(id)}">
           <input type="text" name="name" placeholder="${esc(hint.placeholder || 'Nome do item')}" required maxlength="120" aria-label="Nome do item">
           ${freqFields({ type: defFreq })}
-          <label class="only-interval muted">Última vez que fez (opcional) <input type="date" name="last" max="${today}"></label>
+          <label class="only-rolling muted">Última vez que fez (opcional — a próxima data é contada a partir dela) <input type="date" name="last" max="${today}"></label>
           <button class="btn" type="submit">Adicionar</button>
         </form>
       </details>
@@ -1235,18 +1223,13 @@ function reminderRule(item, today) {
       return { rule: 'FREQ=DAILY', start: today };
     case 'weekdays':
       return { rule: byDay(f.days), start: firstMatchingDay(f.days, today) };
-    case 'weekly':
     case 'times':
       return { rule: byDay(r.days), start: firstMatchingDay(r.days, today) };
-    case 'monthly': {
-      const thisMonth = `${monthKey(today)}-${pad(r.monthDay)}`;
-      const start = thisMonth >= today ? thisMonth : `${shiftMonth(monthKey(today), 1)}-${pad(r.monthDay)}`;
-      return { rule: `FREQ=MONTHLY;BYMONTHDAY=${r.monthDay}`, start };
-    }
-    default: { // interval: a partir do próximo vencimento
-      const last = lastDone(item, today);
-      const next = last ? addDays(last, f.every) : today;
-      return { rule: `FREQ=DAILY;INTERVAL=${f.every}`, start: next > today ? next : today };
+    default: { // rolante: a partir do próximo vencimento (ou hoje, se atrasado)
+      const due = dueDate(item, today);
+      const start = due > today ? due : today;
+      if (f.type === 'monthly') return { rule: `FREQ=MONTHLY;BYMONTHDAY=${Number(start.slice(8))}`, start };
+      return { rule: `FREQ=DAILY;INTERVAL=${f.type === 'weekly' ? 7 : f.every}`, start };
     }
   }
 }
@@ -1367,8 +1350,6 @@ const actions = {
     if (!it) return;
     const today = todayISO();
     if (it.log[today]) delete it.log[today];
-    // Semanal/mensal já feito em outro dia do período: desmarcar desfaz esse registro.
-    else if (it.freq.type !== 'times' && itemStatus(it, today).done) delete it.log[lastDone(it, today)];
     else it.log[today] = true;
     commit();
   },
@@ -1377,13 +1358,7 @@ const actions = {
     if (!it) return;
     if (date > todayISO()) return toast('Esse dia ainda não chegou.');
     if (it.log[date]) delete it.log[date];
-    else if (it.freq.type === 'weekly' || it.freq.type === 'monthly') {
-      // Já feito em outro dia do período: desmarcar desfaz esse registro.
-      const [start, end] = periodBounds(it.freq.type, date);
-      const inPeriod = Object.keys(it.log).filter(d => it.log[d] && d >= start && d <= end);
-      if (inPeriod.length) inPeriod.forEach(d => delete it.log[d]);
-      else it.log[date] = true;
-    } else it.log[date] = true;
+    else it.log[date] = true;
     commit();
   },
   'select-day'({ date }) {
@@ -1532,7 +1507,7 @@ const forms = {
     const { freq, error } = parseFreq(data);
     if (error) return toast(error);
     const log = {};
-    const last = freq.type === 'interval' && data.get('last');
+    const last = ROLLING.has(freq.type) && data.get('last');
     if (last && last <= todayISO()) log[last] = true;
     state.items.push(newItem(data.get('areaId'), name, freq, log));
     commit();
@@ -1549,10 +1524,9 @@ const forms = {
     const reminder = {
       time: data.get('time') || '20:00',
       days: data.getAll('rdays').map(Number),
-      monthDay: Math.min(28, Math.max(1, Math.round(Number(data.get('monthDay')) || 1))),
     };
     const toCalendar = submitter?.value === 'calendar';
-    if (toCalendar && ['weekly', 'times'].includes(freq.type) && !reminder.days.length) {
+    if (toCalendar && freq.type === 'times' && !reminder.days.length) {
       return toast('Escolha em quais dias o lembrete deve tocar.');
     }
     if (toCalendar || it.reminder) it.reminder = reminder;

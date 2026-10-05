@@ -1,5 +1,5 @@
 // Rede primeiro, cache como reserva: sempre atualizado online e funcional offline.
-const CACHE = 'meu-dia-v6';
+const CACHE = 'meu-dia-v7';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', event => {

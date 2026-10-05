@@ -208,6 +208,7 @@ const ui = {
   financeMonth: monthKey(todayISO()),
   txType: 'out',
   editing: null, // { kind: 'item' | 'task' | 'bill', id } em edição na tela
+  selectedDate: todayISO(), // dia aberto na agenda da tela inicial
 };
 
 const isEditing = (kind, id) => ui.editing?.kind === kind && ui.editing.id === id;
@@ -530,6 +531,237 @@ function itemEditRow(item) {
 
 /* ---------- telas ---------- */
 
+/* ---------- agenda: calendário da tela inicial ---------- */
+
+const STRIP_RANGE = 45; // dias antes e depois do dia selecionado na faixa rolável
+const PERIODIC = new Set(['weekly', 'times', 'monthly']);
+const itemStart = item => (item.createdAt ? localDate(item.createdAt) : '0000-00-00');
+const liveItems = () => state.items.filter(it => areaById(it.areaId));
+
+function periodBounds(type, date) {
+  if (type === 'monthly') return [`${monthKey(date)}-01`, monthEnd(monthKey(date))];
+  const start = weekStart(date);
+  return [start, addDays(start, 6)];
+}
+
+/*
+  O item tem uma ocorrência com data definida neste dia?
+  - Diário e dias da semana: pelos dias programados (a partir da criação do item).
+  - A cada N dias: no passado, só onde foi feito; do hoje em diante, previsão a partir
+    da última vez (se estiver atrasado, a previsão recomeça hoje).
+  - Semanal, X por semana e mensal não têm dia: vão para as seções "semana" e "mês".
+*/
+function occursOn(item, date, today) {
+  const f = item.freq;
+  if (PERIODIC.has(f.type)) return false;
+  if (item.log[date]) return true;
+  if (f.type === 'interval') {
+    if (date < today) return false;
+    const last = lastDone(item, today);
+    if (!last) return false;
+    const due = addDays(last, f.every);
+    const base = due > today ? due : today;
+    return date >= base && daysBetween(base, date) % f.every === 0;
+  }
+  if (date < itemStart(item)) return false;
+  if (f.type === 'weekdays') return f.days.includes(parseISODate(date).getDay());
+  return true; // diário
+}
+
+function dayBills(date, today) {
+  return billsForMonth(monthKey(date), today)
+    .filter(r => r.due === date || (date === today && !r.payment && r.daysLeft < 0));
+}
+
+// Contagem para a bolinha de cada dia na faixa: só o que tem data definida.
+function dayIndicator(date, today) {
+  let total = 0;
+  let done = 0;
+  for (const it of liveItems()) {
+    if (occursOn(it, date, today)) {
+      total++;
+      if (it.log[date]) done++;
+    }
+  }
+  for (const t of state.tasks) {
+    if (t.due === date) {
+      total++;
+      if (t.done) done++;
+    }
+  }
+  for (const r of billsForMonth(monthKey(date), today)) {
+    if (r.due === date) {
+      total++;
+      if (r.payment) done++;
+    }
+  }
+  return { total, done };
+}
+
+const fmtLongDate = iso => {
+  const s = parseISODate(iso).toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+
+function dayCheckRow({ id, date, name, done, future, area, label, late }) {
+  return `
+    <li class="item ${done ? 'done' : ''} ${future ? 'future' : ''}">
+      ${future
+        ? '<span class="check placeholder" aria-hidden="true"></span>'
+        : `<button class="check" data-action="toggle-day" data-id="${id}" data-date="${date}" aria-pressed="${done}"
+            aria-label="${done ? 'Desmarcar' : 'Marcar'}: ${esc(name)}">${done ? '✓' : ''}</button>`}
+      <div class="body">
+        <div class="title">${esc(name)}</div>
+        <div class="meta">${area ? `<span class="badge">${esc(area.emoji)} ${esc(area.name)}</span>` : ''}<span class="${late ? 'neg' : ''}">${label}</span></div>
+      </div>
+    </li>`;
+}
+
+function dayItemRow(item, date, today) {
+  const done = !!item.log[date];
+  let label;
+  let late = false;
+  let rank = done ? 3 : 1;
+  if (date === today) {
+    const st = itemStatus(item, today);
+    label = st.label;
+    late = !!st.late;
+    if (late) rank = 0;
+  } else if (date < today) {
+    label = done ? 'Feito' : '<span class="muted">Não feito</span>';
+  } else {
+    label = item.freq.type === 'interval' ? `Previsto · ${freqLabel(item.freq).toLowerCase()}` : esc(freqLabel(item.freq));
+  }
+  const html = dayCheckRow({ id: item.id, date, name: item.name, done, future: date > today, area: areaById(item.areaId), label, late });
+  return { rank, html };
+}
+
+// Itens sem dia fixo: status no período (semana ou mês) do dia selecionado.
+function periodRows(date, today, types) {
+  const [start, end] = periodBounds(types[0], date);
+  const isWeek = types[0] !== 'monthly';
+  return liveItems()
+    .filter(it => types.includes(it.freq.type) && itemStart(it) <= end)
+    .map(it => {
+      const days = Object.keys(it.log).filter(d => it.log[d] && d >= start && d <= end).sort();
+      const goal = it.freq.type === 'times' ? it.freq.per : 1;
+      const met = days.length >= goal;
+      let label;
+      if (it.freq.type === 'times') {
+        label = `${days.length}/${goal} na semana${met ? ' ✓' : ''}`;
+      } else if (met) {
+        label = `Feito ${WEEKDAYS[parseISODate(days[0]).getDay()].toLowerCase()}, ${fmtShortDate(days[0])}`;
+      } else if (end < today) {
+        label = `<span class="muted">Não feito ${isWeek ? 'nessa semana' : 'nesse mês'}</span>`;
+      } else if (start > today) {
+        label = esc(freqLabel(it.freq));
+      } else {
+        const left = daysBetween(today, end);
+        label = left === 0 ? 'Último dia' : `Até ${isWeek ? 'domingo' : fmtShortDate(end)} · ${plural(left, 'dia', 'dias')}`;
+      }
+      // "X por semana": o check é deste dia. Semanal/mensal: feito no período.
+      const done = it.freq.type === 'times' ? !!it.log[date] : met;
+      return {
+        rank: met ? 3 : 1,
+        html: dayCheckRow({ id: it.id, date, name: it.name, done, future: date > today, area: areaById(it.areaId), label }),
+      };
+    })
+    .sort((a, b) => a.rank - b.rank)
+    .map(r => r.html);
+}
+
+function dayStrip(selected, today) {
+  const days = Array.from({ length: STRIP_RANGE * 2 + 1 }, (_, i) => addDays(selected, i - STRIP_RANGE));
+  return `
+    <div class="cal-head">
+      <button class="btn secondary small" data-action="shift-day" data-value="-7" aria-label="Semana anterior">‹</button>
+      <label class="cal-month">
+        <span>${fmtMonth(monthKey(selected))}</span>
+        <span class="jump" aria-hidden="false">📅<input type="date" data-role="jump" value="${selected}" aria-label="Ir para uma data"></span>
+      </label>
+      ${selected !== today ? '<button class="btn small" data-action="go-today">Hoje</button>' : ''}
+      <button class="btn secondary small" data-action="shift-day" data-value="7" aria-label="Próxima semana">›</button>
+    </div>
+    <div class="strip" role="listbox" aria-label="Dias">
+      ${days.map(d => {
+        const ind = dayIndicator(d, today);
+        const wd = parseISODate(d).getDay();
+        const cls = [d === selected && 'sel', d === today && 'today', d < today && 'past', wd === 1 && 'week-start'].filter(Boolean).join(' ');
+        const mark = !ind.total ? '' : ind.done === ind.total ? 'all' : d < today ? 'miss' : 'some';
+        return `
+          <button class="day ${cls}" data-action="select-day" data-date="${d}" role="option" aria-selected="${d === selected}"
+            aria-label="${fmtLongDate(d)}${ind.total ? `: ${ind.done} de ${ind.total} feitos` : ''}">
+            <span class="dow">${WEEKDAYS[wd]}</span>
+            <span class="num">${parseISODate(d).getDate()}</span>
+            <span class="mark ${mark}"></span>
+          </button>`;
+      }).join('')}
+    </div>`;
+}
+
+function dayPanel(date, today) {
+  const isToday = date === today;
+  const future = date > today;
+  const key = monthKey(today);
+
+  const itemRows = liveItems()
+    .filter(it => occursOn(it, date, today))
+    .map(it => dayItemRow(it, date, today));
+
+  const billRows = dayBills(date, today).map(r => ({
+    rank: r.payment ? 3 : r.daysLeft < 0 ? 0 : 1,
+    html: `
+      <li class="item ${r.payment ? 'done' : ''}">
+        <span class="check static" aria-hidden="true">💳</span>
+        <div class="body">
+          <div class="title">${esc(r.bill.name)} · ${money(r.payment ? r.payment.amount : r.bill.amount)}</div>
+          <div class="meta"><span class="badge">💰 Conta</span><span>${billLabel(r)}</span></div>
+        </div>
+        ${r.payment || future ? '' : '<a class="btn secondary small" href="#financas/compromissos">Pagar</a>'}
+      </li>`,
+  }));
+
+  const tasks = state.tasks.filter(t => {
+    if (t.done) return t.doneAt && localDate(t.doneAt) === date;
+    if (t.due === date) return true;
+    return isToday && (t.focus || (t.due && t.due < today));
+  });
+  const taskRows = tasks.map(t => ({ rank: t.done ? 3 : 2, html: taskRow(t, today, { compact: true }) }));
+
+  const rows = [...billRows, ...itemRows, ...taskRows].sort((a, b) => a.rank - b.rank).map(r => r.html);
+  const pending = [...billRows, ...itemRows, ...taskRows].filter(r => r.rank < 3).length;
+
+  const weekRows = periodRows(date, today, ['weekly', 'times']);
+  const monthRows = periodRows(date, today, ['monthly']);
+  const [ws, we] = periodBounds('weekly', date);
+  const weekTitle = ws <= today && today <= we ? 'Nesta semana' : `Semana de ${fmtShortDate(ws)} a ${fmtShortDate(we)}`;
+  const monthTitle = monthKey(date) === key ? 'Neste mês' : fmtMonth(monthKey(date));
+
+  // "A cada N dias" sem nenhum registro: não há como prever; aparece só hoje, à parte.
+  const noRecord = isToday
+    ? liveItems().filter(it => it.freq.type === 'interval' && !lastDone(it, today))
+      .map(it => dayCheckRow({ id: it.id, date, name: it.name, done: false, area: areaById(it.areaId), label: `${esc(freqLabel(it.freq))} · marque na próxima vez que fizer` }))
+    : [];
+  const warnings = isToday ? budgetLines(key).filter(l => l.level !== 'ok') : [];
+
+  const rel = isToday ? 'Hoje' : date === addDays(today, -1) ? 'Ontem' : date === addDays(today, 1) ? 'Amanhã' : '';
+  const empty = future ? 'Nada previsto para esse dia.' : date < today ? 'Nada registrado nesse dia.' : 'Nada para hoje. 🎉';
+
+  return `
+    <section class="day-panel" aria-live="polite">
+      <h2>${rel ? `${rel} · ` : ''}${fmtLongDate(date)} ${pending && isToday ? `<span class="muted">(${pending})</span>` : ''}</h2>
+      ${date < today ? '<p class="muted small" style="margin:-4px 0 8px">Esqueceu de marcar? Dá para marcar dias anteriores.</p>' : ''}
+      ${warnings.length ? `
+        <div class="card alert stack" style="margin-bottom:8px">
+          ${warnings.map(l => `<div>${l.level === 'over' ? '⚠️' : '🟡'} <b>${esc(l.category)}</b>: ${money(l.spent)} de ${money(l.limit)} (${l.pct}%)</div>`).join('')}
+        </div>` : ''}
+      ${list(rows, empty)}
+      ${weekRows.length ? `<h3>${weekTitle} <span class="muted">· qualquer dia</span></h3>${list(weekRows, '')}` : ''}
+      ${monthRows.length ? `<h3>${monthTitle} <span class="muted">· qualquer dia</span></h3>${list(monthRows, '')}` : ''}
+      ${noRecord.length ? `<h3>Sem registro ainda</h3>${list(noRecord, '')}` : ''}
+    </section>`;
+}
+
 const cardLink = (href, emoji, name, lines) => `
   <a class="card area-card" href="${href}">
     <span class="emoji" aria-hidden="true">${esc(emoji)}</span>
@@ -585,30 +817,8 @@ const views = {
   home() {
     const today = todayISO();
     const key = monthKey(today);
-
-    const recurring = state.items
-      .filter(it => areaById(it.areaId))
-      .map(it => ({ it, st: itemStatus(it, today) }))
-      .filter(x => x.st.show || x.st.doneToday)
-      .sort((a, b) => statusRank(a.st) - statusRank(b.st));
-    const tasks = state.tasks.filter(t => !t.done && (t.focus || (t.due && t.due <= today))).sort(sortTasks);
-    const bills = billsForMonth(key, today).filter(r => !r.payment && r.daysLeft <= 3);
+    const date = ui.selectedDate;
     const warnings = budgetLines(key).filter(l => l.level !== 'ok');
-    const pending = recurring.filter(x => !x.st.done).length + tasks.length + bills.length;
-
-    const rows = [
-      ...bills.map(r => `
-        <li class="item">
-          <span class="check static" aria-hidden="true">💳</span>
-          <div class="body">
-            <div class="title">${esc(r.bill.name)} · ${money(r.bill.amount)}</div>
-            <div class="meta">${billLabel(r)}</div>
-          </div>
-          <a class="btn secondary small" href="#financas/compromissos">Pagar</a>
-        </li>`),
-      ...recurring.map(x => itemRow(x.it, x.st, { showArea: true })),
-      ...tasks.map(t => taskRow(t, today, { compact: true })),
-    ];
 
     const open = state.tasks.filter(t => !t.done);
     const oldest = open.reduce((max, t) => Math.max(max, daysBetween(localDate(t.createdAt), today)), 0);
@@ -628,17 +838,13 @@ const views = {
     ];
 
     return `
+      ${dayStrip(date, today)}
+      ${dayPanel(date, today)}
+
       <form class="inline card capture" data-form="task">
         <input class="grow" type="text" name="title" placeholder="Anotar algo que precisa fazer…" required maxlength="200" aria-label="Nova pendência">
         <button class="btn" type="submit" aria-label="Adicionar em Adiados">+</button>
       </form>
-
-      <h2>Para hoje ${pending ? `<span class="muted">(${pending})</span>` : ''}</h2>
-      ${warnings.length ? `
-        <div class="card alert stack">
-          ${warnings.map(l => `<div>${l.level === 'over' ? '⚠️' : '🟡'} <b>${esc(l.category)}</b>: ${money(l.spent)} de ${money(l.limit)} (${l.pct}%)</div>`).join('')}
-        </div>` : ''}
-      ${list(rows, 'Nada para hoje. 🎉')}
 
       <h2>Seus cards</h2>
       <section class="cards">
@@ -1109,7 +1315,22 @@ function viewTitle(view, arg) {
 
 let renderedDay = null; // dia usado na última renderização
 
+// Virou o dia desde a última renderização: quem estava em "hoje" acompanha.
+function rollDay() {
+  const today = todayISO();
+  if (!renderedDay || renderedDay === today) return;
+  if (ui.selectedDate === renderedDay) ui.selectedDate = today;
+  if (ui.financeMonth === monthKey(renderedDay)) ui.financeMonth = monthKey(today);
+}
+
+function centerStrip() {
+  const strip = viewEl.querySelector('.strip');
+  const sel = strip?.querySelector('.day.sel');
+  if (sel) strip.scrollLeft = sel.offsetLeft - strip.clientWidth / 2 + sel.offsetWidth / 2;
+}
+
 function render() {
+  rollDay();
   renderedDay = todayISO();
   const { view, arg } = parseRoute();
   titleEl.textContent = viewTitle(view, arg);
@@ -1119,6 +1340,7 @@ function render() {
   dateEl.hidden = view !== 'home';
   dateEl.textContent = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
   viewEl.innerHTML = views[view](arg);
+  if (view === 'home') centerStrip();
 }
 
 function commit() {
@@ -1149,6 +1371,32 @@ const actions = {
     else if (it.freq.type !== 'times' && itemStatus(it, today).done) delete it.log[lastDone(it, today)];
     else it.log[today] = true;
     commit();
+  },
+  'toggle-day'({ id, date }) {
+    const it = byId(state.items, id);
+    if (!it) return;
+    if (date > todayISO()) return toast('Esse dia ainda não chegou.');
+    if (it.log[date]) delete it.log[date];
+    else if (it.freq.type === 'weekly' || it.freq.type === 'monthly') {
+      // Já feito em outro dia do período: desmarcar desfaz esse registro.
+      const [start, end] = periodBounds(it.freq.type, date);
+      const inPeriod = Object.keys(it.log).filter(d => it.log[d] && d >= start && d <= end);
+      if (inPeriod.length) inPeriod.forEach(d => delete it.log[d]);
+      else it.log[date] = true;
+    } else it.log[date] = true;
+    commit();
+  },
+  'select-day'({ date }) {
+    ui.selectedDate = date;
+    render();
+  },
+  'shift-day'({ value }) {
+    ui.selectedDate = addDays(ui.selectedDate, Number(value));
+    render();
+  },
+  'go-today'() {
+    ui.selectedDate = todayISO();
+    render();
   },
   'add-suggestion'({ area, index }) {
     const sug = SUGGESTIONS[area]?.[Number(index)];
@@ -1443,6 +1691,11 @@ viewEl.addEventListener('submit', e => {
 });
 
 viewEl.addEventListener('change', async e => {
+  if (e.target.dataset.role === 'jump' && e.target.value) {
+    ui.selectedDate = e.target.value;
+    render();
+    return;
+  }
   if (e.target.name === 'freq') {
     e.target.form.dataset.freq = e.target.value;
     return;
@@ -1460,6 +1713,20 @@ viewEl.addEventListener('change', async e => {
   } catch {
     toast('Arquivo inválido: não parece um backup do Meu Dia.');
   }
+});
+
+let touchStart = null;
+viewEl.addEventListener('touchstart', e => {
+  touchStart = e.target.closest('.day-panel') ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+}, { passive: true });
+viewEl.addEventListener('touchend', e => {
+  if (!touchStart) return;
+  const dx = e.changedTouches[0].clientX - touchStart.x;
+  const dy = e.changedTouches[0].clientY - touchStart.y;
+  touchStart = null;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+  ui.selectedDate = addDays(ui.selectedDate, dx < 0 ? 1 : -1);
+  render();
 });
 
 window.addEventListener('hashchange', () => {
@@ -1483,7 +1750,6 @@ const isTyping = () => {
 };
 setInterval(() => {
   if (document.hidden || todayISO() === renderedDay || isTyping()) return;
-  if (ui.financeMonth === monthKey(renderedDay)) ui.financeMonth = monthKey(todayISO()); // virada de mês
   render();
 }, 60 * 1000);
 

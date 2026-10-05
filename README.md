@@ -17,7 +17,13 @@ Para usar no celular, publique a pasta em qualquer hospedagem estática (GitHub 
 
 ## O que tem
 
-A tela inicial tem **"Para hoje"** (o que vence hoje em todos os cards) e os **cards**. Cada card abre sua própria tela.
+A tela inicial é uma **agenda**: uma faixa de dias que dá para rolar (ou deslizar o dedo sobre a lista para trocar de dia, ‹ › para pular semanas, 📅 para ir a uma data) e, abaixo, a **lista de tarefas do dia** escolhido. Embaixo ficam os **cards**, onde você cadastra as rotinas e a recorrência de cada uma.
+
+- **Lista do dia:** itens com dia definido (todo dia, dias da semana, a cada N dias), contas que vencem no dia e pendências com prazo. Hoje também mostra atrasados e pendências em foco.
+- **"Nesta semana" / "Neste mês":** itens sem dia fixo (1x por semana, X vezes por semana, 1x por mês), com o status do período. Dá para marcar em qualquer dia.
+- **Dias passados:** mostram o que foi feito e permitem marcar o que você esqueceu.
+- **Dias futuros:** previsão (sem marcar). "A cada N dias" é previsto a partir da última vez; se atrasar, as datas se ajustam.
+- **Bolinha em cada dia:** verde = tudo feito; laranja = pendente; cinza = dia passado com algo não feito.
 
 | Card | Função |
 | --- | --- |
@@ -40,20 +46,20 @@ Não há notificação push (exigiria um servidor e os dados sairiam do aparelho
 
 ## Como as frequências funcionam
 
-| Frequência | Quando está "feito" | Quando aparece em "Para hoje" |
+| Frequência | Quando está "feito" | Onde aparece na agenda |
 | --- | --- | --- |
-| Todo dia | Marcado hoje | Todos os dias |
-| Dias da semana | Marcado no dia programado | Só nos dias escolhidos |
-| 1x por semana | Marcado em qualquer dia de segunda a domingo | Só no sábado e domingo, se ainda não feito |
-| X vezes por semana | Marcado hoje; a semana conta as vezes (ex.: 2/4) e a meta é batida ao chegar em X | Todo dia, até bater a meta da semana |
-| 1x por mês | Marcado em qualquer dia do mês | Só nos 2 últimos dias do mês, se ainda não feito |
-| A cada N dias | Conta a partir da última vez | Quando vence ou está atrasado |
+| Todo dia | Marcado no dia | Lista de todos os dias |
+| Dias da semana | Marcado no dia programado | Lista dos dias escolhidos |
+| 1x por semana | Marcado em qualquer dia de segunda a domingo | "Nesta semana" |
+| X vezes por semana | Cada dia marcado conta; meta batida ao chegar em X (ex.: 4/4) | "Nesta semana" |
+| 1x por mês | Marcado em qualquer dia do mês | "Neste mês" |
+| A cada N dias | Conta a partir da última vez | Lista do dia previsto (ou de hoje, se atrasado) |
 
-Semanais e mensais só entram em "Para hoje" no fim do prazo **de propósito**: se aparecessem desde segunda, a tela inicial viraria uma lista permanente de pendências. Eles aparecem no card o tempo todo.
+Itens sem dia fixo ficam numa seção separada **de propósito**: se aparecessem em todos os dias da semana, a agenda pareceria uma lista permanente de pendências. "A cada N dias" sem nenhum registro não tem como ser previsto: aparece em "Sem registro ainda" no dia de hoje até a primeira marcação.
 
 ## Compromissos (contas fixas)
 
-Cadastre nome, valor, dia do vencimento e categoria. Todo mês a conta aparece em *Finanças → Compromissos*; ao **pagar**, você confirma o valor (útil para luz/água, que variam) e isso vira uma despesa em Lançamentos. Contas que vencem em até 3 dias ou já venceram aparecem em "Para hoje". Se ao cadastrar o vencimento do mês já passou, a conta começa a contar no mês seguinte.
+Cadastre nome, valor, dia do vencimento e categoria. Todo mês a conta aparece em *Finanças → Compromissos*; ao **pagar**, você confirma o valor (útil para luz/água, que variam) e isso vira uma despesa em Lançamentos. Contas aparecem na agenda no dia do vencimento; vencidas e não pagas aparecem também no dia de hoje. Se ao cadastrar o vencimento do mês já passou, a conta começa a contar no mês seguinte.
 
 ## Como o dinheiro das metas é contado
 

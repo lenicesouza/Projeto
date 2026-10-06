@@ -32,9 +32,29 @@ A tela inicial é uma **agenda**: uma faixa de dias que dá para rolar (ou desli
 | 🇬🇧 **Inglês** | Meta de prática "20 min, 4x por semana" com contagem da semana e **anotações** datadas (o que praticou, palavras novas). |
 | ⏳ **Adiados** | Pendências sem data certa. Mostra há quantos dias você adia cada uma, um "menor próximo passo" e até 3 em **foco da semana**. |
 | 💰 **Finanças** | Lançamentos, **compromissos** (contas fixas do mês, com vencimento e pagamento), orçamento por categoria e metas. |
-| ⚙️ **Configurações** | Criar/excluir cards de rotina (ex.: Academia, Plantas), backup e apagar dados. |
+| ⚙️ **Configurações** | **Adicionar vários itens de uma vez** (colar uma lista), criar/excluir cards de rotina, backup e apagar dados. |
 
 Todo card de rotina também tem anotações. Itens, pendências e compromissos podem ser **editados** pelo ✎ (o histórico é mantido); o "Excluir" fica dentro da edição.
+
+## Adicionar vários itens de uma vez
+
+Em ⚙️ → **📋 Adicionar vários itens de uma vez**, cole uma lista com um item por linha e a frequência escrita do jeito comum:
+
+```
+# 🏠 Casa
+Limpar janelas - a cada 15 dias
+Passar pano - 3x na semana
+Aspirar a casa - dias intercalados
+
+# 🐾 Pets
+Banho no Max - a cada 15 dias
+```
+
+- Entende: "todo dia", "dias intercalados", "1x / 3 vezes na semana", "1x por mês", "a cada 15 dias", "a cada 2 meses", "quinzenal", "semanal", "mensal".
+- `# Nome` abre um card (criado se não existir; o emoji é opcional). Linhas sem `#` vão para o card escolhido na lista.
+- Item com o mesmo nome de um existente (ignorando o que está entre parênteses) **atualiza** a frequência e mantém o histórico.
+- Mostra uma **prévia** antes de salvar, com as linhas que não entendeu e a média de tarefas por dia.
+- As **primeiras datas** dos itens novos são espalhadas pelo ciclo de cada um, nos dias com menos tarefas, para não acumular tudo no primeiro dia.
 
 ## Lembretes
 

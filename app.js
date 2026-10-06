@@ -209,6 +209,7 @@ const ui = {
   txType: 'out',
   editing: null, // { kind: 'item' | 'task' | 'bill', id } em edição na tela
   selectedDate: todayISO(), // dia aberto na agenda da tela inicial
+  bulk: null, // { text, areaId, entries, errors } — prévia de "adicionar vários itens"
 };
 
 const isEditing = (kind, id) => ui.editing?.kind === kind && ui.editing.id === id;
@@ -255,10 +256,11 @@ function addMonths(iso, n) {
 const nextAfter = (item, done) =>
   item.freq.type === 'monthly' ? addMonths(done, 1) : addDays(done, item.freq.type === 'weekly' ? 7 : item.freq.every);
 
-// Quando o item vence, considerando o que foi feito até `upTo` (inclusive). Nunca feito: desde a criação.
+// Quando o item vence, considerando o que foi feito até `upTo` (inclusive).
+// Nunca feito: na primeira data definida (itens adicionados em lote) ou desde a criação.
 function dueDate(item, upTo) {
   const last = lastDone(item, upTo);
-  return last ? nextAfter(item, last) : itemStart(item);
+  return last ? nextAfter(item, last) : item.firstDue || itemStart(item);
 }
 
 /*
@@ -274,8 +276,8 @@ function itemStatus(item, today) {
 
   if (ROLLING.has(f.type)) {
     if (doneToday) return { done: true, doneToday, show: false, label: `Feito hoje · próxima ${fmtShortDate(nextAfter(item, today))}` };
-    if (!last) return { done: false, show: true, label: 'Primeira vez · marque quando fizer' };
-    const due = nextAfter(item, last);
+    if (!last && !item.firstDue) return { done: false, show: true, label: 'Primeira vez · marque quando fizer' };
+    const due = last ? nextAfter(item, last) : item.firstDue;
     const overdue = daysBetween(due, today);
     if (overdue < 0) {
       return { done: false, show: false, resting: true, label: `Próxima: ${fmtShortDate(due)} · em ${plural(-overdue, 'dia', 'dias')}` };
@@ -752,6 +754,172 @@ function dayPanel(date, today) {
     </section>`;
 }
 
+/* ---------- adicionar vários itens colando um texto ---------- */
+
+// Minúsculas e sem acento, preservando o tamanho caractere a caractere (para recortar o nome).
+const foldChar = c => c.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().charAt(0) || c;
+const fold = s => s.split('').map(foldChar).join('');
+const norm = s => fold(s).replace(/\s+/g, ' ').trim();
+const baseName = s => norm(s.replace(/\([^)]*\)/g, ''));
+
+const timesPerWeek = n => (n <= 1 ? { type: 'weekly' } : n >= 7 ? { type: 'daily' } : { type: 'times', per: n });
+const everyDays = n => (n <= 1 ? { type: 'daily' } : n === 7 ? { type: 'weekly' } : { type: 'interval', every: Math.min(n, 365) });
+
+// Ordem importa: o primeiro padrão que casar define a frequência.
+const FREQ_PATTERNS = [
+  [/\btodos? (?:os )?dias?\b|\btodo dia\b|\bdiari[oa](?:mente)?\b/, () => ({ type: 'daily' })],
+  // "intercalados" e variações com erro de digitação ("interlacados", "intercalado"…)
+  [/\bdias? inter[a-z]*\b|\bdia sim,? dia nao\b/, () => ({ type: 'interval', every: 2 })],
+  [/\b(\d+)\s*(?:x|vez|vezes)\s*(?:por|na|no|ao|a|em)?\s*(?:a\s)?semana\b/, m => timesPerWeek(Number(m[1]))],
+  [/\b(\d+)\s*(?:x|vez|vezes)\s*(?:por|no|ao|a|em)?\s*mes\b/, m => (Number(m[1]) <= 1 ? { type: 'monthly' } : everyDays(Math.round(30 / Number(m[1]))))],
+  [/\b(?:a cada|cada)\s*(\d+)\s*mes(?:es)?\b/, m => (Number(m[1]) === 1 ? { type: 'monthly' } : everyDays(30 * Number(m[1])))],
+  [/\b(?:a cada|cada)\s*(\d+)\s*semanas?\b/, m => everyDays(7 * Number(m[1]))],
+  [/\bmensal(?:mente)?\b|\btodo mes\b/, () => ({ type: 'monthly' })],
+  [/\bsemanal(?:mente)?\b|\btoda semana\b/, () => ({ type: 'weekly' })],
+  [/\bquinzenal(?:mente)?\b/, () => ({ type: 'interval', every: 15 })],
+  [/\b(?:a cada |cada )?(\d+)\s*dias?\b/, m => everyDays(Number(m[1]))],
+];
+
+function parseItemLine(line) {
+  const folded = fold(line);
+  for (const [re, make] of FREQ_PATTERNS) {
+    const m = folded.match(re);
+    if (!m) continue;
+    let name = line.slice(0, m.index).replace(/[\s|:;,–—-]+$/, '').trim();
+    const rest = line.slice(m.index + m[0].length).replace(/^[\s|:;,–—-]+/, '').trim();
+    if (rest && /\p{L}/u.test(rest)) name += ` (${rest})`; // ex.: "3 vezes na semana 30 minutos"
+    return name ? { name, freq: make(m) } : null;
+  }
+  return null;
+}
+
+const EMOJI_PREFIX = /^((?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:️|‍|\p{Extended_Pictographic}|\p{Regional_Indicator})*)\s*/u;
+
+// Lê o texto colado: linhas "# Card" (ou "Card:") abrem um card; as outras são "item frequência".
+function parseBulk(text, defaultAreaId) {
+  const entries = [];
+  const errors = [];
+  let area = { ...areaById(defaultAreaId) };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/^\s*[-•*]\s+/, '').trim();
+    if (!line) continue;
+    const header = line.match(/^#+\s*(.+)$/) || (!parseItemLine(line) && line.match(/^(.+?):$/));
+    if (header) {
+      let title = header[1].trim();
+      const em = title.match(EMOJI_PREFIX);
+      const emoji = em ? em[1] : '';
+      if (em) title = title.slice(em[0].length).trim();
+      const existing = state.areas.find(a => norm(a.name) === norm(title));
+      area = existing ? { ...existing } : { id: null, name: title, emoji: emoji || '📌' };
+      continue;
+    }
+    const parsed = parseItemLine(line);
+    if (!parsed) {
+      errors.push(raw.trim());
+      continue;
+    }
+    const target = area.id && state.items.find(it => it.areaId === area.id && baseName(it.name) === baseName(parsed.name));
+    const key = `${norm(area.name)}|${baseName(parsed.name)}`;
+    const i = entries.findIndex(e => e.key === key);
+    const entry = { key, area, ...parsed, target: target ? target.id : null };
+    if (i >= 0) entries[i] = entry; // repetido no texto: vale a última linha
+    else entries.push(entry);
+  }
+  return { entries, errors };
+}
+
+const cycleDays = f => (f.type === 'weekly' ? 7 : f.type === 'monthly' ? 30 : f.every);
+
+/*
+  Distribui a primeira data dos itens novos (sem histórico) ao longo do ciclo de cada um,
+  escolhendo os dias com menos tarefas — para não cair tudo no mesmo dia.
+*/
+function spreadFirstDues(targets, today) {
+  const H = 90;
+  const load = new Array(H).fill(0);
+  const ids = new Set(targets.map(t => t.id));
+  for (const it of liveItems()) {
+    if (ids.has(it.id) || !ROLLING.has(it.freq.type)) continue;
+    let off = Math.max(0, daysBetween(today, dueDate(it, today)));
+    for (; off < H; off += cycleDays(it.freq)) load[off]++;
+  }
+  for (const it of [...targets].sort((a, b) => cycleDays(a.freq) - cycleDays(b.freq))) {
+    const p = cycleDays(it.freq);
+    let best = 0;
+    let bestCost = Infinity;
+    for (let o = 0; o < Math.min(p, 30); o++) {
+      let sum = 0;
+      let n = 0;
+      for (let k = o; k < H; k += p) { sum += load[k]; n++; }
+      if (sum / n < bestCost) { bestCost = sum / n; best = o; }
+    }
+    for (let k = best; k < H; k += p) load[k]++;
+    it.firstDue = addDays(today, best);
+  }
+}
+
+// Média de tarefas por dia somando todas as rotinas.
+function dailyLoad(items) {
+  return items.reduce((s, it) => {
+    const f = it.freq;
+    if (f.type === 'daily') return s + 1;
+    if (f.type === 'weekdays') return s + f.days.length / 7;
+    if (f.type === 'times') return s + f.per / 7;
+    return s + 1 / cycleDays(f);
+  }, 0);
+}
+
+function bulkSection() {
+  const b = ui.bulk;
+  const preview = b && (() => {
+    const groups = new Map();
+    for (const e of b.entries) {
+      const k = norm(e.area.name);
+      if (!groups.has(k)) groups.set(k, { area: e.area, items: [] });
+      groups.get(k).items.push(e);
+    }
+    const afterIds = new Set(b.entries.map(e => e.target).filter(Boolean));
+    const projected = [...liveItems().filter(it => !afterIds.has(it.id)), ...b.entries];
+    const added = b.entries.filter(e => !e.target).length;
+    const updated = b.entries.length - added;
+    return `
+      <div class="card stack bulk-preview">
+        <strong>Prévia: ${plural(added, 'item novo', 'itens novos')}${updated ? ` · ${plural(updated, 'atualização', 'atualizações')}` : ''}</strong>
+        ${[...groups.values()].map(g => `
+          <div>
+            <div class="bulk-area">${esc(g.area.emoji)} ${esc(g.area.name)} ${g.area.id ? '' : '<span class="badge">card novo</span>'}</div>
+            <ul class="bulk-list">${g.items.map(e => `
+              <li><span>${esc(e.name)}</span><span class="muted">${esc(freqLabel(e.freq))}${e.target ? ' · <b>atualiza o existente</b>' : ''}</span></li>`).join('')}
+            </ul>
+          </div>`).join('')}
+        ${b.errors.length ? `
+          <div class="neg"><b>Não entendi ${plural(b.errors.length, 'linha', 'linhas')}</b> (escreva a frequência como "1x por semana", "a cada 15 dias", "3x na semana"…):
+            <ul class="bulk-list">${b.errors.map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>` : ''}
+        <p class="muted small">Com isso, suas rotinas somam em média <b>${dailyLoad(projected).toFixed(1).replace('.', ',')} tarefas por dia</b>.
+          As primeiras datas dos itens novos serão espalhadas pelos próximos dias para não acumular tudo hoje.</p>
+        <div class="inline">
+          <button class="btn" data-action="bulk-apply" ${b.entries.length ? '' : 'disabled'}>Adicionar</button>
+          <button class="btn secondary" data-action="bulk-cancel">Cancelar</button>
+        </div>
+      </div>`;
+  })();
+
+  return `
+    <details class="card add" ${b ? 'open' : ''}>
+      <summary>📋 Adicionar vários itens de uma vez</summary>
+      <form class="stack" data-form="bulk-preview">
+        <p class="muted small" style="margin:0">Um item por linha, com a frequência no fim. Para separar por card, use uma linha "# Nome do card"
+          (se o card não existir, ele é criado). Itens com o mesmo nome de um existente atualizam a frequência e mantêm o histórico.</p>
+        <textarea name="text" rows="8" required placeholder="# 🏠 Casa&#10;Limpar janelas - a cada 15 dias&#10;Trocar roupa de cama - 1x por semana&#10;Passar pano - 3x na semana&#10;&#10;# 🐾 Pets&#10;Banho no Max - a cada 15 dias">${esc(b?.text || '')}</textarea>
+        <label class="muted inline-label">Card para linhas sem "#"
+          <select name="area">${state.areas.map(a => `<option value="${esc(a.id)}" ${a.id === (b?.areaId || 'casa') ? 'selected' : ''}>${esc(a.emoji)} ${esc(a.name)}</option>`).join('')}</select>
+        </label>
+        <button class="btn secondary" type="submit">Ver prévia</button>
+      </form>
+      ${preview || ''}
+    </details>`;
+}
+
 const cardLink = (href, emoji, name, lines) => `
   <a class="card area-card" href="${href}">
     <span class="emoji" aria-hidden="true">${esc(emoji)}</span>
@@ -948,6 +1116,8 @@ const views = {
       plural(state.transactions.length, 'lançamento', 'lançamentos'),
     ].join(' · ');
     return `
+      ${bulkSection()}
+
       <h2>Cards de rotina</h2>
       ${list(state.areas.map(a => `
         <li class="item">
@@ -1373,6 +1543,43 @@ const actions = {
     ui.selectedDate = todayISO();
     render();
   },
+  'bulk-apply'() {
+    const b = ui.bulk;
+    if (!b?.entries.length) return;
+    const createdAreas = new Map();
+    const touched = [];
+    for (const e of b.entries) {
+      let areaId = e.area.id;
+      if (!areaId) {
+        const k = norm(e.area.name);
+        if (!createdAreas.has(k)) {
+          const area = { id: uid(), name: e.area.name, emoji: e.area.emoji };
+          state.areas.push(area);
+          createdAreas.set(k, area.id);
+        }
+        areaId = createdAreas.get(k);
+      }
+      const existing = e.target && byId(state.items, e.target);
+      if (existing) {
+        // Atualiza nome e frequência, mantendo o histórico.
+        Object.assign(existing, { name: e.name, freq: e.freq });
+        touched.push(existing);
+      } else {
+        const it = newItem(areaId, e.name, e.freq);
+        state.items.push(it);
+        touched.push(it);
+      }
+    }
+    spreadFirstDues(touched.filter(it => ROLLING.has(it.freq.type) && !lastDone(it, todayISO()) && !it.firstDue), todayISO());
+    const n = b.entries.length;
+    ui.bulk = null;
+    commit();
+    toast(`${plural(n, 'item salvo', 'itens salvos')}. Veja as datas na agenda.`);
+  },
+  'bulk-cancel'() {
+    ui.bulk = null;
+    render();
+  },
   'add-suggestion'({ area, index }) {
     const sug = SUGGESTIONS[area]?.[Number(index)];
     if (!sug) return;
@@ -1563,6 +1770,13 @@ const forms = {
     state.notes.push({ id: uid(), areaId: data.get('areaId'), date: data.get('date') || todayISO(), text, createdAt: new Date().toISOString() });
     commit();
     toast('Anotação salva.');
+  },
+  'bulk-preview'(data) {
+    const text = data.get('text');
+    const areaId = data.get('area');
+    ui.bulk = { text, areaId, ...parseBulk(text, areaId) };
+    render();
+    viewEl.querySelector('.bulk-preview')?.scrollIntoView({ block: 'start' });
   },
   area(data) {
     const name = data.get('name').trim();

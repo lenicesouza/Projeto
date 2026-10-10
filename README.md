@@ -51,10 +51,11 @@ Banho no Max - a cada 15 dias
 ```
 
 - Entende: "todo dia", "dias intercalados", "1x / 3 vezes na semana", "1x por mês", "a cada 15 dias", "a cada 2 meses", "quinzenal", "semanal", "mensal".
+- Datas na mesma linha: **"fiz hoje"**, "fiz ontem", "feito 05/10" (registra como feito) e **"próxima 10/11"** (escolhe a próxima vez). Ex.: `Lavar cortinas - 1x por mês - fiz hoje - próxima 10/11`.
 - `# Nome` abre um card (criado se não existir; o emoji é opcional). Linhas sem `#` vão para o card escolhido na lista.
 - Item com o mesmo nome de um existente (ignorando o que está entre parênteses) **atualiza** a frequência e mantém o histórico.
 - Mostra uma **prévia** antes de salvar, com as linhas que não entendeu e a média de tarefas por dia.
-- As **primeiras datas** dos itens novos são espalhadas pelo ciclo de cada um, nos dias com menos tarefas, para não acumular tudo no primeiro dia.
+- Itens novos **sem nenhuma data** têm a primeira data espalhada pelo ciclo de cada um, nos dias com menos tarefas, para não acumular tudo no primeiro dia.
 
 ## Lembretes
 
@@ -77,7 +78,8 @@ Não há notificação push (exigiria um servidor e os dados sairiam do aparelho
 | A cada N dias | N dias após a última vez | Acumula para o dia seguinte |
 | X vezes por semana | Meta da semana (seg–dom), em qualquer dia | A contagem zera na segunda |
 
-- Item **nunca marcado** aparece hoje como "Primeira vez". Ao criar, informe **"Última vez que fez"** para a agenda já começar na data certa — ou volte na agenda até o dia em que fez e marque lá.
+- **Você pode escolher a próxima data.** Ao marcar como feito hoje, aparece **"Próxima vez: [data]"** já calculada — troque se quiser. Também dá para escolher em ✎ (adiar ou adiantar, inclusive um atrasado) e ao criar o item. A data escolhida vale **até a próxima vez que o item for marcado como feito**; depois a recorrência volta a contar sozinha.
+- Item **nunca marcado** e sem data escolhida aparece hoje como "Primeira vez". Ao criar, informe "Última vez que fez" e/ou "Próxima vez".
 - Como a contagem recomeça de quando você fez, atrasos frequentes fazem "toda semana" virar, na prática, a cada 8–9 dias.
 
 ## Compromissos (contas fixas)

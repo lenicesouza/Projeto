@@ -256,11 +256,34 @@ function addMonths(iso, n) {
 const nextAfter = (item, done) =>
   item.freq.type === 'monthly' ? addMonths(done, 1) : addDays(done, item.freq.type === 'weekly' ? 7 : item.freq.every);
 
+/*
+  Próxima data escolhida à mão: vale até a próxima vez que o item for marcado como feito
+  (aí a recorrência volta a contar sozinha). `nextDueBase` guarda qual era a última vez
+  feita quando a data foi escolhida. `firstDue` é a data espalhada ao adicionar em lote.
+*/
+function manualNext(item, last) {
+  if (item.nextDue && (item.nextDueBase ?? null) === (last ?? null)) return item.nextDue;
+  if (!last && item.firstDue) return item.firstDue;
+  return null;
+}
+
 // Quando o item vence, considerando o que foi feito até `upTo` (inclusive).
-// Nunca feito: na primeira data definida (itens adicionados em lote) ou desde a criação.
 function dueDate(item, upTo) {
   const last = lastDone(item, upTo);
-  return last ? nextAfter(item, last) : item.firstDue || itemStart(item);
+  return manualNext(item, last) || (last ? nextAfter(item, last) : itemStart(item));
+}
+
+// Escolhe a próxima data de um item rolante (vale até a próxima marcação).
+function setNextDue(item, date, today) {
+  const last = lastDone(item, today);
+  delete item.firstDue;
+  if (date === (last ? nextAfter(item, last) : null)) {
+    delete item.nextDue; // igual ao calculado: não precisa guardar
+    delete item.nextDueBase;
+  } else {
+    item.nextDue = date;
+    item.nextDueBase = last;
+  }
 }
 
 /*
@@ -275,9 +298,12 @@ function itemStatus(item, today) {
   const doneToday = last === today;
 
   if (ROLLING.has(f.type)) {
-    if (doneToday) return { done: true, doneToday, show: false, label: `Feito hoje · próxima ${fmtShortDate(nextAfter(item, today))}` };
-    if (!last && !item.firstDue) return { done: false, show: true, label: 'Primeira vez · marque quando fizer' };
-    const due = last ? nextAfter(item, last) : item.firstDue;
+    const manual = manualNext(item, last);
+    if (doneToday) {
+      return { done: true, doneToday, show: false, next: manual || nextAfter(item, today), label: `Feito hoje · próxima ${fmtShortDate(manual || nextAfter(item, today))}` };
+    }
+    if (!last && !manual) return { done: false, show: true, label: 'Primeira vez · marque quando fizer' };
+    const due = manual || nextAfter(item, last);
     const overdue = daysBetween(due, today);
     if (overdue < 0) {
       return { done: false, show: false, resting: true, label: `Próxima: ${fmtShortDate(due)} · em ${plural(-overdue, 'dia', 'dias')}` };
@@ -412,6 +438,12 @@ function weekDots(item, today) {
   }).join('')}</div>`;
 }
 
+// Depois de marcar como feito hoje: mostra a próxima data, já calculada, para trocar se quiser.
+const nextPicker = (item, st) => (ROLLING.has(item.freq.type) && st.doneToday ? `
+  <label class="next-inline">Próxima vez:
+    <input type="date" data-role="next" data-id="${item.id}" value="${st.next}" min="${addDays(todayISO(), 1)}" aria-label="Próxima vez de ${esc(item.name)}">
+  </label>` : '');
+
 function itemRow(item, st, { showArea = false } = {}) {
   if (!showArea && isEditing('item', item.id)) return itemEditRow(item);
   const area = showArea && areaById(item.areaId);
@@ -425,6 +457,7 @@ function itemRow(item, st, { showArea = false } = {}) {
         <div class="title">${esc(item.name)}</div>
         <div class="meta">${tag}<span class="${st.late ? 'neg' : ''}">${st.label}</span>${!showArea && item.reminder ? `<span>⏰ ${esc(item.reminder.time)}</span>` : ''}</div>
         ${!showArea && item.freq.type === 'times' ? weekDots(item, todayISO()) : ''}
+        ${showArea ? '' : nextPicker(item, st)}
       </div>
       ${showArea ? '' : `<button class="icon-btn" data-action="edit" data-kind="item" data-id="${item.id}" aria-label="Editar ${esc(item.name)}">✎</button>`}
     </li>`;
@@ -532,6 +565,15 @@ function itemEditRow(item) {
         <input type="hidden" name="id" value="${item.id}">
         <input type="text" name="name" value="${esc(item.name)}" required maxlength="120" aria-label="Nome do item">
         ${freqFields(item.freq)}
+        ${(() => {
+          const today = todayISO();
+          const due = dueDate(item, today);
+          const value = due < today ? today : due;
+          return `<label class="only-rolling muted inline-label">Próxima vez
+            <input type="date" name="next" value="${value}" min="${today}">
+            <input type="hidden" name="next_initial" value="${value}">
+            <span class="small">(adiar ou adiantar; depois a recorrência continua sozinha)</span></label>`;
+        })()}
         <fieldset class="reminder stack">
           <legend>⏰ Lembrete no calendário do celular</legend>
           <label class="muted inline-label">Horário <input type="time" name="time" value="${esc(r.time || '20:00')}" required></label>
@@ -617,7 +659,7 @@ const fmtLongDate = iso => {
   return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
-function dayCheckRow({ id, date, name, done, future, area, label, late }) {
+function dayCheckRow({ id, date, name, done, future, area, label, late, extra = '' }) {
   return `
     <li class="item ${done ? 'done' : ''} ${future ? 'future' : ''}">
       ${future
@@ -627,6 +669,7 @@ function dayCheckRow({ id, date, name, done, future, area, label, late }) {
       <div class="body">
         <div class="title">${esc(name)}</div>
         <div class="meta">${area ? `<span class="badge">${esc(area.emoji)} ${esc(area.name)}</span>` : ''}<span class="${late ? 'neg' : ''}">${label}</span></div>
+        ${extra}
       </div>
     </li>`;
 }
@@ -636,11 +679,13 @@ function dayItemRow(item, date, today) {
   let label;
   let late = false;
   let rank = done ? 3 : 1;
+  let extra = '';
   if (date === today) {
     const st = itemStatus(item, today);
-    label = st.label;
+    label = st.doneToday && ROLLING.has(item.freq.type) ? 'Feito hoje' : st.label;
     late = !!st.late;
     if (late) rank = 0;
+    extra = nextPicker(item, st);
   } else if (date < today) {
     const due = ROLLING.has(item.freq.type) && !done ? dueDate(item, addDays(date, -1)) : null;
     label = done ? 'Feito' : due && due < date
@@ -649,7 +694,7 @@ function dayItemRow(item, date, today) {
   } else {
     label = ROLLING.has(item.freq.type) ? `Previsto · ${esc(freqLabel(item.freq).toLowerCase())}` : esc(freqLabel(item.freq));
   }
-  const html = dayCheckRow({ id: item.id, date, name: item.name, done, future: date > today, area: areaById(item.areaId), label, late });
+  const html = dayCheckRow({ id: item.id, date, name: item.name, done, future: date > today, area: areaById(item.areaId), label, late, extra });
   return { rank, html };
 }
 
@@ -780,7 +825,45 @@ const FREQ_PATTERNS = [
   [/\b(?:a cada |cada )?(\d+)\s*dias?\b/, m => everyDays(Number(m[1]))],
 ];
 
-function parseItemLine(line) {
+// "05/10" ou "05/10/2026" → data. Sem ano: futuro para a próxima vez, passado para o que já foi feito.
+function dayMonthToISO(d, m, y, today, wantFuture) {
+  const day = Number(d);
+  const month = Number(m);
+  if (!(day >= 1 && day <= 31 && month >= 1 && month <= 12)) return null;
+  let year = y ? Number(y.length === 2 ? `20${y}` : y) : Number(today.slice(0, 4));
+  let iso = `${year}-${pad(month)}-${pad(day)}`;
+  if (!y && wantFuture && iso < today) iso = `${year + 1}-${pad(month)}-${pad(day)}`;
+  if (!y && !wantFuture && iso > today) iso = `${year - 1}-${pad(month)}-${pad(day)}`;
+  return iso;
+}
+
+const DATE_RE = '(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?';
+const LAST_RE = new RegExp(`\\b(?:fiz|feit[oa]|ultima(?: vez)?)\\s*(?:em\\s*|dia\\s*|:\\s*)?(hoje|ontem|${DATE_RE})`);
+const NEXT_RE = new RegExp(`\\bproxima(?: vez)?\\s*(?:em\\s*|dia\\s*|:\\s*)?(${DATE_RE})`);
+
+// Tira "fiz hoje" / "próxima 10/11" da linha e devolve as datas encontradas.
+function extractDates(line, today) {
+  let text = line;
+  let last = null;
+  let next = null;
+  const blank = m => {
+    text = text.slice(0, m.index) + ' '.repeat(m[0].length) + text.slice(m.index + m[0].length);
+  };
+  const ml = fold(text).match(LAST_RE);
+  if (ml) {
+    last = ml[1] === 'hoje' ? today : ml[1] === 'ontem' ? addDays(today, -1) : dayMonthToISO(ml[2], ml[3], ml[4], today, false);
+    blank(ml);
+  }
+  const mn = fold(text).match(NEXT_RE);
+  if (mn) {
+    next = dayMonthToISO(mn[2], mn[3], mn[4], today, true);
+    blank(mn);
+  }
+  return { text: text.replace(/(?:\s*[|:;,–—-]\s*)+$/, '').trim(), last, next };
+}
+
+function parseItemLine(rawLine) {
+  const { text: line, last, next } = extractDates(rawLine, todayISO());
   const folded = fold(line);
   for (const [re, make] of FREQ_PATTERNS) {
     const m = folded.match(re);
@@ -788,7 +871,7 @@ function parseItemLine(line) {
     let name = line.slice(0, m.index).replace(/[\s|:;,–—-]+$/, '').trim();
     const rest = line.slice(m.index + m[0].length).replace(/^[\s|:;,–—-]+/, '').trim();
     if (rest && /\p{L}/u.test(rest)) name += ` (${rest})`; // ex.: "3 vezes na semana 30 minutos"
-    return name ? { name, freq: make(m) } : null;
+    return name ? { name, freq: make(m), last, next } : null;
   }
   return null;
 }
@@ -889,7 +972,7 @@ function bulkSection() {
           <div>
             <div class="bulk-area">${esc(g.area.emoji)} ${esc(g.area.name)} ${g.area.id ? '' : '<span class="badge">card novo</span>'}</div>
             <ul class="bulk-list">${g.items.map(e => `
-              <li><span>${esc(e.name)}</span><span class="muted">${esc(freqLabel(e.freq))}${e.target ? ' · <b>atualiza o existente</b>' : ''}</span></li>`).join('')}
+              <li><span>${esc(e.name)}</span><span class="muted">${esc(freqLabel(e.freq))}${e.last ? ` · feito ${fmtShortDate(e.last)}` : ''}${e.next && ROLLING.has(e.freq.type) ? ` · <b>próxima ${fmtShortDate(e.next)}</b>` : ''}${e.target ? ' · <b>atualiza o existente</b>' : ''}</span></li>`).join('')}
             </ul>
           </div>`).join('')}
         ${b.errors.length ? `
@@ -1035,7 +1118,8 @@ const views = {
           <input type="hidden" name="areaId" value="${esc(id)}">
           <input type="text" name="name" placeholder="${esc(hint.placeholder || 'Nome do item')}" required maxlength="120" aria-label="Nome do item">
           ${freqFields({ type: defFreq })}
-          <label class="only-rolling muted">Última vez que fez (opcional — a próxima data é contada a partir dela) <input type="date" name="last" max="${today}"></label>
+          <label class="only-rolling muted inline-label">Última vez que fez (opcional) <input type="date" name="last" max="${today}"></label>
+          <label class="only-rolling muted inline-label">Próxima vez (opcional — se vazio, é calculada pela frequência) <input type="date" name="next" min="${today}"></label>
           <button class="btn" type="submit">Adicionar</button>
         </form>
       </details>
@@ -1559,18 +1643,19 @@ const actions = {
         }
         areaId = createdAreas.get(k);
       }
-      const existing = e.target && byId(state.items, e.target);
-      if (existing) {
-        // Atualiza nome e frequência, mantendo o histórico.
-        Object.assign(existing, { name: e.name, freq: e.freq });
-        touched.push(existing);
-      } else {
-        const it = newItem(areaId, e.name, e.freq);
+      const today = todayISO();
+      let it = e.target && byId(state.items, e.target);
+      if (it) Object.assign(it, { name: e.name, freq: e.freq }); // mantém o histórico
+      else {
+        it = newItem(areaId, e.name, e.freq);
         state.items.push(it);
-        touched.push(it);
       }
+      if (e.last && e.last <= today) it.log[e.last] = true;
+      if (e.next && e.next >= today && ROLLING.has(e.freq.type)) setNextDue(it, e.next, today);
+      touched.push(it);
     }
-    spreadFirstDues(touched.filter(it => ROLLING.has(it.freq.type) && !lastDone(it, todayISO()) && !it.firstDue), todayISO());
+    // Sem data informada e sem histórico: espalha a primeira data para não acumular tudo hoje.
+    spreadFirstDues(touched.filter(it => ROLLING.has(it.freq.type) && !lastDone(it, todayISO()) && !it.firstDue && !it.nextDue), todayISO());
     const n = b.entries.length;
     ui.bulk = null;
     commit();
@@ -1713,11 +1798,17 @@ const forms = {
     if (!name) return;
     const { freq, error } = parseFreq(data);
     if (error) return toast(error);
+    const today = todayISO();
     const log = {};
     const last = ROLLING.has(freq.type) && data.get('last');
-    if (last && last <= todayISO()) log[last] = true;
-    state.items.push(newItem(data.get('areaId'), name, freq, log));
+    if (last && last <= today) log[last] = true;
+    const next = ROLLING.has(freq.type) && data.get('next');
+    if (next && next < today) return toast('A próxima vez não pode ser antes de hoje.');
+    const it = newItem(data.get('areaId'), name, freq, log);
+    if (next) setNextDue(it, next, today);
+    state.items.push(it);
     commit();
+    if (next) toast(`Próxima vez: ${fmtShortDate(next)}`);
   },
   'item-edit'(data, submitter) {
     const it = byId(state.items, data.get('id'));
@@ -1728,6 +1819,11 @@ const forms = {
     // O histórico (log) é mantido: mudar a frequência não apaga o que já foi feito.
     it.name = name;
     it.freq = freq;
+    const next = data.get('next');
+    if (ROLLING.has(freq.type) && next && next !== data.get('next_initial')) {
+      if (next < todayISO()) return toast('A próxima vez não pode ser antes de hoje.');
+      setNextDue(it, next, todayISO());
+    }
     const reminder = {
       time: data.get('time') || '20:00',
       days: data.getAll('rdays').map(Number),
@@ -1879,6 +1975,19 @@ viewEl.addEventListener('submit', e => {
 });
 
 viewEl.addEventListener('change', async e => {
+  if (e.target.dataset.role === 'next' && e.target.value) {
+    const it = byId(state.items, e.target.dataset.id);
+    const today = todayISO();
+    if (!it) return;
+    if (e.target.value <= today) {
+      toast('Escolha uma data depois de hoje.');
+      return render();
+    }
+    setNextDue(it, e.target.value, today);
+    commit();
+    toast(`${it.name}: próxima vez em ${fmtShortDate(e.target.value)}`);
+    return;
+  }
   if (e.target.dataset.role === 'jump' && e.target.value) {
     ui.selectedDate = e.target.value;
     render();
